@@ -59,15 +59,13 @@ Xem [danh sách trang và route](src/pages/README.md). Khi deploy BrowserRouter,
 
 ## Deploy Vercel + Railway
 
-Frontend được build trên Vercel; backend Node chạy liên tục trên Railway. Vercel chuyển tiếp `/api/*` tới Railway, vì vậy trình duyệt chỉ làm việc với một origin và cookie đăng nhập quản trị vẫn là `HttpOnly`.
+Frontend được build trên Vercel; backend Node chạy liên tục trên Railway. Vercel chuyển tiếp `/api/*` tới Railway, vì vậy trình duyệt chỉ làm việc với một origin.
 
 Railway dùng `railway.toml`. Tạo một Web Service từ repository, tạo public domain, gắn Volume tại `/data`, rồi đặt:
 
 ```env
 ACCOUNT_DATA_DIR=/data
 NODE_ENV=production
-APP_ADMIN_PASSWORD=<mật khẩu quản trị dài ít nhất 12 ký tự>
-APP_SESSION_SECRET=<chuỗi ngẫu nhiên dài ít nhất 32 ký tự>
 APP_ALLOWED_ORIGINS=https://<tên-project>.vercel.app
 ```
 
@@ -79,4 +77,4 @@ Sau khi Railway cấp domain, thêm rewrite API vào đầu mảng `rewrites` tr
 { "source": "/api/:path*", "destination": "https://<railway-domain>/api/:path*" }
 ```
 
-Vercel dùng `pnpm build` và publish thư mục `dist`. Backend từ chối khởi động production nếu thiếu mật khẩu hoặc secret; frontend hiển thị màn hình đăng nhập và lưu phiên bằng cookie ký số trong 7 ngày.
+Vercel dùng `pnpm build` và publish thư mục `dist`.

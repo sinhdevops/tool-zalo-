@@ -19,10 +19,6 @@ const directory = process.env.ACCOUNT_DATA_DIR ?? path.join(root, '.data')
 const allowedOrigins = (process.env.APP_ALLOWED_ORIGINS ?? '').split(',').map((value) => value.trim()).filter(Boolean)
 const allowedHosts = (process.env.APP_ALLOWED_HOSTS ?? '').split(',').map((value) => value.trim()).filter(Boolean)
 if (process.env.RAILWAY_PUBLIC_DOMAIN) allowedHosts.push(process.env.RAILWAY_PUBLIC_DOMAIN)
-const password = process.env.APP_ADMIN_PASSWORD
-const secret = process.env.APP_SESSION_SECRET
-if (production && (!password || password.length < 12)) throw new Error('APP_ADMIN_PASSWORD must contain at least 12 characters')
-if (production && (!secret || secret.length < 32)) throw new Error('APP_SESSION_SECRET must contain at least 32 characters')
 mkdirSync(directory, { recursive: true })
 const unreadStore = new UnreadStore(path.join(directory, 'unread.sqlite'))
 const chatStore = new EncryptedChatStore(directory)
@@ -37,7 +33,6 @@ automation.start()
 const server = createApp(service, port, automation, {
   allowedOrigins,
   allowedHosts,
-  auth: password && secret ? { password, secret, secure: production } : undefined,
 })
 server.listen(port, host, () => console.log(`Account API ready on ${host}:${port}`))
 server.on('error', () => { console.error('Không thể mở Account API. Kiểm tra cổng đang sử dụng.'); service.shutdown(); process.exit(1) })

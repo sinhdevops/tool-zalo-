@@ -1,10 +1,9 @@
 import type { Account, LoginSession } from '../../../shared/accounts'
-import { apiFetch } from '../../auth/apiFetch'
 
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   let response: Response
   try {
-    response = await apiFetch(path, {
+    response = await fetch(path, {
       ...init,
       signal: AbortSignal.any([AbortSignal.timeout(15_000), ...(init.signal ? [init.signal] : [])]),
       headers: { 'Content-Type': 'application/json', 'X-Zalo-Tool': '1', ...init.headers },

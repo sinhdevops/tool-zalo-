@@ -1,12 +1,10 @@
 import { createServer } from 'node:http'
-import type { IncomingMessage, ServerResponse } from 'node:http'
+import type { ServerResponse } from 'node:http'
 import type { AccountService } from './accounts/service.ts'
 import { handleChatRequest } from './messages/http.ts'
 import { ChatError } from './messages/types.ts'
 import type { AutomationService } from './automation/service.ts'
 import { handleAutomation } from './automation/http.ts'
-import { clearSessionCookie, createSession, passwordIsValid, requestIsAuthenticated, setSessionCookie } from './auth.ts'
-import type { AuthConfig } from './auth.ts'
 
 function json(response: ServerResponse, status: number, body: unknown) {
   response.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' })
@@ -16,19 +14,6 @@ function json(response: ServerResponse, status: number, body: unknown) {
 interface AppOptions {
   allowedHosts?: string[]
   allowedOrigins?: string[]
-  auth?: AuthConfig
-}
-
-async function body(request: IncomingMessage) {
-  const chunks: Buffer[] = []
-  let size = 0
-  for await (const chunk of request) {
-    const value = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
-    size += value.length
-    if (size > 4096) throw new Error('AUTH_BODY_TOO_LARGE')
-    chunks.push(value)
-  }
-  return JSON.parse(Buffer.concat(chunks).toString('utf8')) as unknown
 }
 
 export function createApp(service: AccountService, port: number, automation?: AutomationService, options: AppOptions = {}) {
@@ -55,22 +40,6 @@ export function createApp(service: AccountService, port: number, automation?: Au
       if (method !== 'GET' && (request.headers['x-zalo-tool'] !== '1' || !request.headers['content-type']?.startsWith('application/json'))) {
         json(response, 403, { error: 'Yêu cầu không hợp lệ.' }); return
       }
-      if (method === 'GET' && url.pathname === '/api/auth/session') {
-        json(response, 200, { authenticated: requestIsAuthenticated(request, options.auth), required: Boolean(options.auth) }); return
-      }
-      if (method === 'POST' && url.pathname === '/api/auth/login') {
-        if (!options.auth) { json(response, 200, { authenticated: true, required: false }); return }
-        const input = await body(request)
-        const password = input && typeof input === 'object' && 'password' in input ? input.password : undefined
-        if (!passwordIsValid(password, options.auth)) { json(response, 401, { error: 'Mật khẩu không đúng.' }); return }
-        setSessionCookie(response, createSession(options.auth), options.auth)
-        json(response, 200, { authenticated: true, required: true }); return
-      }
-      if (method === 'POST' && url.pathname === '/api/auth/logout') {
-        clearSessionCookie(response, options.auth?.secure ?? false)
-        json(response, 200, { authenticated: false, required: Boolean(options.auth) }); return
-      }
-      if (!requestIsAuthenticated(request, options.auth)) { json(response, 401, { error: 'Bạn cần đăng nhập để sử dụng công cụ.' }); return }
       if (method === 'GET' && url.pathname === '/api/accounts') { json(response, 200, { accounts: service.listAccounts() }); return }
       if (automation && await handleAutomation(request, response, url, automation, json)) return
       if (await handleChatRequest(request, response, url, service, json)) return
@@ -91,9 +60,6 @@ export function createApp(service: AccountService, port: number, automation?: Au
       }
       json(response, 404, { error: 'Không tìm thấy API.' })
     } catch (error) {
-      if (error instanceof SyntaxError || (error instanceof Error && error.message === 'AUTH_BODY_TOO_LARGE')) {
-        json(response, 400, { error: 'Dữ liệu đăng nhập không hợp lệ.' }); return
-      }
       if (error instanceof ChatError) { json(response, error.status, { error: error.message }); return }
       const busy = error instanceof Error && error.message === 'TOO_MANY_LOGINS'
       json(response, busy ? 429 : 500, { error: busy ? 'Có quá nhiều phiên QR. Hãy đóng phiên đang mở và thử lại.' : 'Không thể xử lý yêu cầu. Vui lòng thử lại.' })

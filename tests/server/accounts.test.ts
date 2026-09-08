@@ -143,25 +143,3 @@ test('HTTP API rejects foreign origins and serves QR status without credentials'
   assert.equal(response.headers.get('cache-control'), 'no-store')
   const body = await response.text(); assert.ok(body.includes('Tài khoản kiểm thử')); assert.ok(!body.includes('test-imei-secret'))
 })
-
-test('HTTP API requires a signed admin session when production auth is configured', async (t) => {
-  const service = new AccountService(new MemoryStore(), new FakeGateway())
-  await service.initialize()
-  const server = createApp(service, 3001, undefined, {
-    auth: { password: 'a-long-test-password', secret: 'a-test-secret-that-is-longer-than-32-characters', secure: false },
-  })
-  server.listen(0, '127.0.0.1'); await new Promise<void>((resolve) => server.once('listening', resolve))
-  t.after(() => { service.shutdown(); server.closeAllConnections(); server.close() })
-  const address = server.address(); assert.ok(address && typeof address !== 'string')
-  const base = `http://127.0.0.1:${address.port}`
-  const headers = { Host: '127.0.0.1:3001', 'X-Zalo-Tool': '1', 'Content-Type': 'application/json' }
-
-  assert.equal((await fetch(`${base}/api/accounts`, { headers })).status, 401)
-  assert.equal((await fetch(`${base}/api/auth/login`, { method: 'POST', headers, body: JSON.stringify({ password: 'wrong' }) })).status, 401)
-  const login = await fetch(`${base}/api/auth/login`, { method: 'POST', headers, body: JSON.stringify({ password: 'a-long-test-password' }) })
-  assert.equal(login.status, 200)
-  const cookie = login.headers.get('set-cookie')?.split(';')[0]
-  assert.ok(cookie?.startsWith('zalo_tool_session=')); assert.ok(login.headers.get('set-cookie')?.includes('HttpOnly'))
-  assert.equal((await fetch(`${base}/api/auth/session`, { headers: { ...headers, Cookie: cookie } })).status, 200)
-  assert.equal((await fetch(`${base}/api/accounts`, { headers: { ...headers, Cookie: cookie } })).status, 200)
-})

@@ -1,10 +1,9 @@
 import type { Conversation, ConversationList, ConversationType, MessageList, PhoneSyncState, SendChatInput, MessageAction } from '../../../shared/messages'
-import { apiFetch } from '../../auth/apiFetch'
 
 async function request<T>(account: string, action: string, params: Record<string, string> = {}, init: RequestInit = {}): Promise<T> {
   let response: Response
   try {
-    response = await apiFetch(`/api/chat/${encodeURIComponent(account)}/${action}?${new URLSearchParams(params)}`, {
+    response = await fetch(`/api/chat/${encodeURIComponent(account)}/${action}?${new URLSearchParams(params)}`, {
       ...init, headers: { 'Content-Type': 'application/json', 'X-Zalo-Tool': '1' },
       signal: AbortSignal.any([AbortSignal.timeout(init.method === 'POST' && action === 'messages' ? 130_000 : 30_000), ...(init.signal ? [init.signal] : [])]),
     })
