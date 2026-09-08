@@ -1,0 +1,185 @@
+import { randomUUID } from 'node:crypto'
+import type { AccountService } from '../accounts/service.ts'
+import type { MessagingConnection } from '../messages/types.ts'
+import { ChatError } from '../messages/types.ts'
+import type { AutomationRule, IncomingMessage, Lead } from '../../shared/automation.ts'
+import { AutomationStore } from './store.ts'
+import type { Job } from './store.ts'
+import { phones, orderFields } from './parse.ts'
+
+export class AutomationService {
+  private accounts: Pick<AccountService, 'getMessaging'>
+  readonly store: AutomationStore
+  private binding?: { accountId: string; chat: MessagingConnection; unsubscribe: () => void }
+  private timer?: ReturnType<typeof setInterval>
+  private busy = false
+  private connecting = false
+  private closed = false
+  private fault = ''
+  private lastReconnect = 0
+  private backfilledRevision = ''
+  private settleMs?: number
+  constructor(accounts: Pick<AccountService, 'getMessaging'>, store: AutomationStore, settleMs?: number) { this.accounts = accounts; this.store = store; this.settleMs = settleMs }
+  start() { this.timer = setInterval(() => { void this.tick() }, 1500); this.timer.unref(); void this.tick() }
+  snapshot() { return { rule: this.store.rule(), connection: this.binding?.chat.status() ?? 'disconnected', error: this.fault, ...this.store.stats() } }
+  async choices(accountId: string, groupId?: string) {
+    const chat = this.accounts.getMessaging(accountId)
+    if (groupId) return { members: await chat.groupMembers(groupId) }
+    return { groups: (await chat.list('group')).conversations }
+  }
+  private async validate(accountId: string, groupId: string, senderId: string, targetGroupId: string) {
+    if (![accountId, groupId, senderId, targetGroupId].every((id) => /^\d{1,30}$/.test(id))) throw new ChatError('Hãy chọn tài khoản, nhóm theo dõi, người gửi và nhóm nhận hợp lệ.')
+    if (accountId === senderId) throw new ChatError('Chọn người gửi khác tài khoản đang trực.')
+    if (groupId === targetGroupId) throw new ChatError('Nhóm nhận số phải khác nhóm đang theo dõi.')
+    const chat = this.accounts.getMessaging(accountId)
+    const groups = (await chat.list('group')).conversations
+    const group = groups.find((g) => g.id === groupId)
+    const targetGroup = groups.find((g) => g.id === targetGroupId)
+    const sender = (await chat.groupMembers(groupId)).find((m) => m.id === senderId)
+    if (!group || !targetGroup || !sender) throw new ChatError('Không tìm thấy nhóm hoặc thành viên đã chọn.')
+    return { groupName: group.name, senderName: sender.name, targetGroupName: targetGroup.name }
+  }
+  async configure(accountId: string, groupId: string, senderId: string, targetGroupId: string) {
+    if (this.store.rule()?.enabled || this.busy) throw new ChatError('Tắt quy tắc và chờ thao tác hiện tại hoàn tất trước khi đổi cấu hình.', 409)
+    const names = await this.validate(accountId, groupId, senderId, targetGroupId)
+    if (this.closed || this.store.rule()?.enabled || this.busy) throw new ChatError('Trạng thái đã thay đổi. Hãy tải lại.', 409)
+    const rule: AutomationRule = { id: 'group-leads', accountId, groupId, senderId, targetGroupId, ...names, enabled: false, enabledAt: 0, revision: randomUUID() }
+    this.store.saveRule(rule); this.store.log('Đã lưu cấu hình trực nhóm. Quy tắc đang tắt.')
+    return this.snapshot()
+  }
+  async toggle(enabled: boolean) {
+    const rule = this.store.rule()
+    if (!rule) throw new ChatError('Lưu cấu hình trước khi bật quy tắc.')
+    if (rule.enabled === enabled) return this.snapshot()
+    if (enabled) {
+      if (this.busy) throw new ChatError('Chờ thao tác đang chạy hoàn tất.', 409)
+      if (!rule.targetGroupId) throw new ChatError('Mở Cấu hình và chọn nhóm nhận số trước khi bật quy tắc.')
+      await this.validate(rule.accountId, rule.groupId, rule.senderId, rule.targetGroupId)
+      if (this.closed || this.store.rule()?.revision !== rule.revision) throw new ChatError('Cấu hình đã thay đổi. Hãy tải lại.', 409)
+    }
+    this.store.transaction(() => {
+      this.store.saveRule({ ...rule, enabled, ...(enabled ? { enabledAt: Date.now(), revision: randomUUID() } : {}) })
+      if (!enabled) for (const job of this.store.jobs('pending')) this.cancel(job)
+      this.store.log(enabled ? 'Đã bật trực nhóm. Chỉ xử lý tin mới từ thời điểm này.' : 'Đã tắt trực nhóm. Thao tác đã gửi tới Zalo có thể vẫn hoàn tất.')
+    })
+    this.fault = ''
+    await this.tick()
+    return this.snapshot()
+  }
+  private cancel(job: Job) {
+    this.store.saveJob({ ...job, state: 'cancelled' })
+    for (const leadId of job.leadIds) { const lead = this.store.lead(leadId); if (lead && lead.status !== 'sent') this.store.saveLead({ ...lead, status: 'review', detail: 'Quy tắc đã dừng trước khi chuyển tiếp hoàn tất. Chưa tự gửi lại.' }) }
+  }
+  private applyCardToLead(scope: string, card: { name: string; phone?: string; contactId?: string }) {
+    const cardPhones = phones(card.phone ?? '')
+    if (cardPhones.length !== 1) return
+    this.store.enrichLeadFromCard(scope, cardPhones[0]!, card.name, card.contactId)
+  }
+  private backfillCardNames(rule: AutomationRule, chat: MessagingConnection) {
+    const scope = `${rule.accountId}:${rule.groupId}:${rule.senderId}`
+    for (const message of chat.messages('group', rule.groupId).messages) {
+      if (message.senderId !== rule.senderId) continue
+      for (const attachment of message.attachments) if (attachment.kind === 'contact') this.applyCardToLead(scope, attachment)
+    }
+  }
+  ingest(accountId: string, event: IncomingMessage) {
+    if (this.closed || this.fault) return
+    const rule = this.store.rule(), m = event.message
+    if (!rule?.enabled || rule.accountId !== accountId || m.type !== 'group' || m.threadId !== rule.groupId || m.senderId !== rule.senderId || m.self || m.system || !Number.isFinite(m.timestamp) || m.timestamp < rule.enabledAt) return
+    const scope = `${accountId}:${rule.groupId}:${rule.senderId}`
+    const textPhones = phones(m.text)
+    const cards = m.attachments.filter((attachment) => attachment.kind === 'contact')
+    if (!textPhones.length && !cards.length) return
+    try {
+      this.store.transaction(() => {
+        if (!this.store.observe(`${scope}:${m.id}`)) return
+        for (const card of cards) {
+          const cardPhones = phones(card.phone ?? '')
+          if (cardPhones.length === 1 && card.contactId && /^\d{1,30}$/.test(card.contactId)) this.store.card({ revision: rule.revision, phone: cardPhones[0]!, contactId: card.contactId, name: card.name.trim().slice(0, 160), groupId: rule.groupId, messageId: m.id, clientId: event.clientId, at: m.timestamp })
+          this.applyCardToLead(scope, card)
+        }
+        if (!textPhones.length) return
+        const leadIds: string[] = []
+        for (const phone of textPhones) {
+          const previous = this.store.byPhone(scope, phone)
+          const fields = orderFields(m.text)
+          const now = Date.now()
+          const lead: Lead = previous ? { ...previous, updatedAt: now, occurrences: previous.occurrences + 1, name: fields.name || previous.name, address: fields.address || previous.address, plan: fields.plan || previous.plan } : {
+            id: randomUUID(), scope, phone, ...fields, name: fields.name || '', createdAt: now, updatedAt: now,
+            sourceAt: m.timestamp, sourceId: m.id, occurrences: 1, accountId, groupId: rule.groupId, groupName: rule.groupName, senderId: rule.senderId, revision: rule.revision, hasOrder: true, status: 'queued', stage: 'new', detail: `Chờ thả tim và chuyển tiếp sang nhóm ${rule.targetGroupName}.` }
+          lead.sourceAt = m.timestamp; lead.sourceId = m.id; lead.revision = rule.revision; lead.hasOrder = true; lead.status = 'queued'; lead.sentAt = undefined; lead.delivery = 'forward'; lead.detail = `Chờ thả tim và chuyển tiếp sang nhóm ${rule.targetGroupName}.`
+          this.store.saveLead(lead)
+          leadIds.push(lead.id)
+          this.store.log(previous ? 'Đã cập nhật lead từ tin nhắn mới.' : 'Đã lưu lead mới.', lead.id)
+        }
+        const delay = this.settleMs ?? 10_000 + Math.floor(Math.random() * 5_001)
+        this.store.newJob({ kind: 'forward', revision: rule.revision, accountId, groupId: rule.groupId, targetGroupId: rule.targetGroupId, messageId: m.id, clientId: event.clientId, text: m.text, leadIds, notBefore: Date.now() + delay })
+      })
+    } catch { this.fault = 'Không lưu được dữ liệu tự động hóa. Đã ngừng xử lý; kiểm tra thư mục dữ liệu rồi tắt/bật lại quy tắc.' }
+  }
+  async tick() {
+    if (this.closed || this.connecting || this.fault) return
+    const rule = this.store.rule()
+    if (!rule?.enabled) { this.binding?.unsubscribe(); this.binding = undefined; return }
+    this.connecting = true
+    try {
+      const chat = this.accounts.getMessaging(rule.accountId)
+      if (this.binding?.chat !== chat) {
+        this.binding?.unsubscribe()
+        this.binding = { accountId: rule.accountId, chat, unsubscribe: chat.subscribeIncoming((event) => this.ingest(rule.accountId, event)) }
+      }
+      if (this.backfilledRevision !== rule.revision) {
+        this.backfillCardNames(rule, chat)
+        this.backfilledRevision = rule.revision
+      }
+      if (chat.status() === 'idle') await chat.list('group')
+      else if (chat.status() === 'disconnected' && Date.now() - this.lastReconnect > 30_000) { this.lastReconnect = Date.now(); chat.reconnect() }
+      if (!this.closed && !this.busy && chat.status() === 'connected') {
+        const job = this.store.jobs('pending').find((item) => (item.notBefore ?? 0) <= Date.now())
+        if (job) { this.busy = true; void this.run(job, chat).finally(() => { this.busy = false }) }
+      }
+    } catch { this.binding?.unsubscribe(); this.binding = undefined }
+    finally { this.connecting = false }
+  }
+  private active(job: Job) { const rule = this.store.rule(); return !this.closed && !this.fault && rule?.enabled && rule.revision === job.revision && rule.accountId === job.accountId }
+  private async run(job: Job, chat: MessagingConnection) {
+    try {
+      if (!this.active(job)) { this.cancel(job); return }
+      this.store.saveJob({ ...job, state: 'running' })
+      await chat.automationHeart(job.groupId, job.messageId, job.clientId)
+      this.store.log('Đã thả ❤️ vào tin chứa số điện thoại.')
+      if (!this.active(job)) { this.cancel(job); return }
+      const deliveries = job.leadIds.flatMap((leadId) => {
+        let lead = this.store.lead(leadId)
+        if (!lead) return []
+        const sourceAt = lead.sourceAt
+        const card = this.store.cards(job.revision, lead.phone, sourceAt).filter((item) => item.groupId === job.groupId).sort((a, b) => Math.abs(a.at - sourceAt) - Math.abs(b.at - sourceAt))[0]
+        if (card) {
+          this.store.enrichLeadFromCard(lead.scope, lead.phone, card.name ?? '', card.contactId)
+          lead = this.store.lead(leadId) ?? lead
+        }
+        this.store.saveLead({ ...lead, status: 'sending', detail: 'Đang gửi nguyên tin nguồn và danh thiếp (nếu có) sang nhóm nhận.' })
+        return [{ phone: lead.phone, contactId: card?.contactId }]
+      })
+      if (!job.text?.trim()) throw new ChatError('Tác vụ cũ không lưu nội dung tin nguồn. Không thể gửi lại an toàn.')
+      const delivered = await chat.automationDeliver(job.targetGroupId, job.text, deliveries)
+      const now = Date.now()
+      for (const leadId of job.leadIds) { const lead = this.store.lead(leadId); if (lead) { const hasCard = delivered.find((item) => item.phone === lead.phone)?.card; this.store.saveLead({ ...lead, status: 'sent', sentAt: now, updatedAt: now, delivery: 'forward', detail: hasCard ? 'Zalo đã xác nhận gửi nguyên tin nguồn kèm danh thiếp sang nhóm nhận.' : 'Đã gửi nguyên tin nguồn; không tìm thấy tài khoản Zalo để gửi danh thiếp.' }) } }
+      const cardCount = delivered.filter((item) => item.card).length
+      this.store.log(`Zalo xác nhận đã gửi nguyên tin chứa ${delivered.length} số; ${cardCount} số có kèm danh thiếp.`)
+      this.store.saveJob({ ...job, state: 'done' })
+    } catch (error) {
+      try {
+        const detail = error instanceof ChatError ? error.message : 'Chưa xác nhận được thao tác từ Zalo. Kiểm tra Zalo; không tự thực hiện lại.'
+        this.store.saveJob({ ...job, state: 'review' })
+        for (const leadId of job.leadIds) { const lead = this.store.lead(leadId); if (lead) this.store.saveLead({ ...lead, status: 'review', detail }) }
+        this.store.log(`Thả tim hoặc gửi sang nhóm chưa hoàn tất: ${detail}`)
+      } catch { this.fault = 'Không lưu được kết quả. Đã ngừng tự động hóa để tránh gửi lặp.' }
+    }
+  }
+  async close() {
+    this.closed = true; clearInterval(this.timer); this.binding?.unsubscribe()
+    // Keep the database open for any acknowledgement already in flight; process exit closes it.
+    if (!this.busy) this.store.close()
+  }
+}
