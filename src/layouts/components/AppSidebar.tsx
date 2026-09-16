@@ -15,7 +15,7 @@ export default function AppSidebar({ collapsed, mobileOpen, onNavigate }: AppSid
           <div className="app-nav-group" key={group}>
             <p className="app-nav-group__label">{group}</p>
             {appRoutes.filter((route) => route.group === group).map(({ id, path, title, icon: Icon }) => (
-              <NavLink key={id} to={path} end onClick={onNavigate} aria-label={title}
+              <NavLink key={id} to={path} end={id !== 'automation'} onClick={onNavigate} aria-label={title}
                 title={collapsed ? title : undefined}
                 className={({ isActive }) => `app-nav-link${isActive ? ' app-nav-link--active' : ''}`}>
                 <Icon aria-hidden="true" /><span className="app-nav-link__label">{title}</span>

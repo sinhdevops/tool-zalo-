@@ -1,42 +1,62 @@
-import { useState } from 'react'
 import { Link } from 'react-router-dom'
-import { FiArrowRight, FiCheckCircle, FiHeart, FiInbox, FiSettings, FiUsers, FiZap } from 'react-icons/fi'
-import { useAccounts } from '../accounts/hooks/useAccounts'
+import { FiArrowRight, FiCheckCircle, FiHeart, FiInbox, FiUsers, FiZap } from 'react-icons/fi'
 import { useChatPolling } from '../messages/hooks/useChatPolling'
 import { automationApi } from './api'
-import RuleForm from './RuleForm'
 import './automation.css'
+import './overview.css'
+
 export default function AutomationPage() {
-  const { accounts, error: accountError } = useAccounts()
-  const { data, error, refresh } = useChatPolling(automationApi.state, 3000)
-  const [editing, setEditing] = useState(false), [busy, setBusy] = useState(false), [actionError, setActionError] = useState('')
-  const rule = data?.rule, connected = data?.connection === 'connected'
-  async function toggle() {
-    setBusy(true); setActionError('')
-    try { await automationApi.toggle(!rule?.enabled); refresh() }
-    catch (cause) { setActionError(cause instanceof Error ? cause.message : 'Không đổi được trạng thái.'); refresh() }
-    finally { setBusy(false) }
-  }
-  return <div className="auto-page">
-    <header className="page-heading"><span className="page-eyebrow">Công cụ</span><h1>Tự động hóa</h1><p>Quản lý các công cụ tự động theo từng nhóm chức năng.</p></header>
-    <div className="auto-tabs" role="tablist" aria-label="Nhóm công cụ tự động hóa">
-      <button id="automation-tab-inbox" type="button" role="tab" aria-selected="true" aria-controls="automation-panel-inbox"><FiInbox /> Nhận tin <span>1</span></button>
+  const { data, error } = useChatPolling(automationApi.state, 3000)
+  const enabled = Boolean(data?.rule?.enabled)
+  const connected = data?.connection === 'connected'
+  const status = !data ? 'Đang tải' : !enabled ? 'Đang tắt' : connected ? 'Đang hoạt động' : 'Chờ kết nối'
+
+  return (
+    <div className="auto-page auto-hub">
+      <header className="auto-hub__hero">
+        <div>
+          <span className="page-eyebrow">Trung tâm công cụ</span>
+          <h1>Tự động hóa</h1>
+          <p>Tất cả quy trình tự động của bạn, được tổ chức ở một nơi.</p>
+        </div>
+        <div className="auto-hub__summary" aria-label="Tổng quan công cụ">
+          <span><strong>1</strong>Công cụ</span><i aria-hidden="true" /><span><strong>{enabled ? 1 : 0}</strong>Đang bật</span>
+        </div>
+      </header>
+
+      <section className="auto-hub__metrics" aria-label="Kết quả tự động hóa">
+        <div><span className="auto-hub__metric-icon blue"><FiUsers /></span><span>Lead đã lưu<strong>{data?.total ?? '—'}</strong></span></div>
+        <div><span className="auto-hub__metric-icon green"><FiCheckCircle /></span><span>Đã chuyển tiếp<strong>{data?.sent ?? '—'}</strong></span></div>
+        <div><span className="auto-hub__metric-icon amber"><FiZap /></span><span>Đang chờ xử lý<strong>{data?.waiting ?? '—'}</strong></span></div>
+      </section>
+
+      {(error || data?.error) && <p className="auto-error" role="alert">{data?.error || error}</p>}
+
+      <section className="auto-hub__catalog" aria-labelledby="automation-tools-heading">
+        <div className="auto-hub__section-heading">
+          <div><span className="auto-hub__section-icon"><FiInbox /></span><div><h2 id="automation-tools-heading">Công cụ nhận tin</h2><p>Tự xử lý khi tài khoản nhận được tin nhắn mới.</p></div></div>
+          <span className="auto-hub__count">1 công cụ</span>
+        </div>
+
+        <article className="auto-tool-card">
+          <div className="auto-tool-card__identity">
+            <span className="auto-tool-card__icon"><FiHeart /></span>
+            <div>
+              <div className="auto-tool-card__title"><h3>Trực nhóm — nhận lead</h3><span className={`auto-tool-status ${enabled && connected ? 'active' : enabled ? 'waiting' : ''}`}><i />{status}</span></div>
+              <p>Phát hiện số điện thoại trong nhóm, thả tim và chuyển nguyên tin kèm danh thiếp sang nhóm nhận lead.</p>
+              <div className="auto-tool-card__tags"><span>Tin nhắn nhóm</span><span>Lead</span><span>Chuyển tiếp</span></div>
+            </div>
+          </div>
+          <div className="auto-tool-card__stats">
+            <span><small>Nhóm theo dõi</small><strong>{data?.rule?.groupName || 'Chưa cấu hình'}</strong></span>
+            <span><small>Nhóm nhận</small><strong>{data?.rule?.targetGroupName || 'Chưa cấu hình'}</strong></span>
+          </div>
+          <div className="auto-tool-card__actions">
+            <Link className="auto-tool-card__secondary" to="/leads">Xem lead</Link>
+            <Link className="auto-tool-card__primary" to="/automation/group-lead">Mở công cụ <FiArrowRight /></Link>
+          </div>
+        </article>
+      </section>
     </div>
-    <section className="auto-tab-panel" id="automation-panel-inbox" role="tabpanel" aria-labelledby="automation-tab-inbox">
-      <div className="auto-panel-heading"><div><h2>Nhận tin</h2><p>Các công cụ tự xử lý ngay khi tài khoản nhận được tin nhắn mới.</p></div><Link className="auto-button" to="/leads">Quản lý lead <FiArrowRight /></Link></div>
-      <div className="auto-metrics"><div><FiUsers /><span>Lead đã lưu<strong>{data?.total ?? '—'}</strong></span></div><div><FiCheckCircle /><span>Đã gửi sang nhóm<strong>{data?.sent ?? '—'}</strong></span></div><div><FiZap /><span>Chưa gửi<strong>{data?.waiting ?? '—'}</strong></span></div></div>
-      {(error || accountError || actionError || data?.error) && <p className="auto-error" role="alert">{actionError || data?.error || error || accountError}</p>}
-      <h2 className="section-title">Công cụ nhận tin</h2><div className="automation-cards"><section className="automation-card" aria-label="Trực nhóm — nhận lead">
-        <div className="auto-card-top"><span className="auto-feature-icon"><FiHeart /></span><span className={`auto-badge ${rule?.enabled && connected ? 'green' : ''}`}>{!data ? 'Đang tải…' : !rule?.enabled ? 'Đang tắt' : connected ? 'Đang trực' : 'Chờ kết nối'}</span></div>
-        <h2>Trực nhóm — nhận lead</h2><p>Nhận tin có số điện thoại, thả tim rồi gửi nguyên tin và danh thiếp sang nhóm nhận.</p>
-        <dl className="auto-config"><dt>Tài khoản</dt><dd>{accounts.find((a) => a.id === rule?.accountId)?.displayName || rule?.accountId || 'Chưa chọn'}</dd><dt>Nhóm theo dõi</dt><dd>{rule?.groupName || 'Trà Xinh Tv Viettel 🍀💰💸❤️'}</dd><dt>Người gửi</dt><dd>{rule?.senderName || 'Wifi Truyền Hình Camera V I E T T E L'}</dd><dt>Nhóm nhận số</dt><dd>{rule?.targetGroupName || 'Chưa chọn'}</dd></dl>
-        <div className="auto-flow"><span>Nhận số</span><FiArrowRight /><span>Chờ 10–15 giây + ❤️</span><FiArrowRight /><span>Gửi tin + danh thiếp</span></div>
-        <p className="auto-small">Luôn gửi đầy đủ tin nhắn chứa số. Danh thiếp được lấy từ tin nguồn hoặc tra trực tiếp bằng số Zalo rồi gửi ngay sau tin. Chỉ xử lý tin mới khi quy tắc đang bật.</p>
-        {rule?.enabledAt ? <p className="auto-small">Lần bật gần nhất: {new Date(rule.enabledAt).toLocaleString('vi-VN')}</p> : null}
-        <div className="auto-card-footer"><button className="auto-button" disabled={!data || busy || rule?.enabled} onClick={() => setEditing(true)}><FiSettings />Cấu hình</button><button className={`auto-button ${rule?.enabled ? 'danger' : 'primary'}`} disabled={!rule || busy || Boolean(error)} onClick={() => void toggle()}>{busy ? 'Đang cập nhật…' : rule?.enabled ? 'Tắt quy tắc' : 'Bật quy tắc'}</button></div>
-      </section></div>
-      <p className="auto-footnote">Backend cần chạy và tài khoản cần kết nối. Bạn có thể chuyển trang; không cần mở sẵn hội thoại. Tin trong lịch sử cũ không tự kích hoạt quy tắc. <Link to="/settings?tab=log">Xem nhật ký trong Cài đặt</Link>.</p>
-    </section>
-    {editing && <RuleForm rule={rule ?? null} accounts={accounts} onClose={() => setEditing(false)} onSaved={() => { setEditing(false); refresh() }} />}
-  </div>
+  )
 }
