@@ -20,3 +20,9 @@ Dữ liệu nằm trong `my-react-app/.data/automation.sqlite`, hoặc thư mụ
 | GET `/api/leads?search=...&stage=...&page=1` | Tìm và lọc lead |
 
 Kiểm thử tự động dùng fixture SDK giả và không gửi dữ liệu đến tài khoản thật: `pnpm test`.
+
+## Nhiều cấu hình nhận nhóm
+
+Trang `/automation/group-lead` hiển thị danh sách cấu hình và nút **Tạo nhận nhóm mới**. Mỗi cấu hình có tài khoản, nhóm theo dõi, người gửi, nhóm nhận số và trạng thái bật/tắt riêng. Tắt một cấu hình chỉ hủy tác vụ chờ của cấu hình đó. Tắt cấu hình trước khi chỉnh sửa; lưu mới không tự bật.
+
+`GET /api/automation/state` trả thêm `rules`, gồm trạng thái kết nối của từng cấu hình. `POST /api/automation/rule` nhận `id: null` để tạo mới hoặc `id` của cấu hình để sửa. `POST /api/automation/enabled` nhận `{id, enabled}`. Cấu hình cũ `group-leads` và dữ liệu cũ được giữ nguyên. Cấu hình mới tách lead và chống trùng theo từng cấu hình, kể cả khi cùng số điện thoại xuất hiện ở nhiều nguồn. Thống kê trên đầu trang là tổng của mọi cấu hình.

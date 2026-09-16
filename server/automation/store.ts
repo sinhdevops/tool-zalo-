@@ -34,7 +34,8 @@ export class AutomationStore {
     this.db.exec('BEGIN IMMEDIATE')
     try { const value = fn(); this.db.exec('COMMIT'); return value } catch (error) { this.db.exec('ROLLBACK'); throw error }
   }
-  rule(): AutomationRule | null { const row = this.db.prepare('SELECT body FROM automation_config WHERE id=?').get('group-leads'); return row ? JSON.parse(String(row.body)) : null }
+  rules(): AutomationRule[] { return this.db.prepare('SELECT body FROM automation_config ORDER BY rowid').all().map(row => JSON.parse(String(row.body))) }
+  rule(id = 'group-leads'): AutomationRule | null { const row = this.db.prepare('SELECT body FROM automation_config WHERE id=?').get(id); return row ? JSON.parse(String(row.body)) : null }
   saveRule(rule: AutomationRule) { this.db.prepare('INSERT OR REPLACE INTO automation_config VALUES(?,?)').run(rule.id, JSON.stringify(rule)) }
   observe(id: string) { return this.db.prepare('INSERT OR IGNORE INTO automation_events VALUES(?)').run(id).changes > 0 }
   lead(id: string): Lead | undefined { const row = this.db.prepare('SELECT body FROM leads WHERE id=?').get(id); return row ? JSON.parse(String(row.body)) : undefined }

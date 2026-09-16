@@ -37,11 +37,11 @@ export async function handleAutomation(request: IncomingMessage, response: Serve
   else if (action === '/api/automation/rule' && method === 'POST') {
     const data = await body(request)
     if (typeof data.accountId !== 'string' || typeof data.groupId !== 'string' || typeof data.senderId !== 'string' || typeof data.targetGroupId !== 'string') throw new ChatError('Cấu hình không hợp lệ.')
-    json(response, 200, await service.configure(data.accountId, data.groupId, data.senderId, data.targetGroupId))
+    json(response, 200, await service.configure(data.accountId, data.groupId, data.senderId, data.targetGroupId, data.id === null ? null : typeof data.id === 'string' ? data.id : undefined))
   } else if (action === '/api/automation/enabled' && method === 'POST') {
     const data = await body(request)
     if (typeof data.enabled !== 'boolean') throw new ChatError('Trạng thái bật/tắt không hợp lệ.')
-    json(response, 200, await service.toggle(data.enabled))
+    json(response, 200, await service.toggle(data.enabled, typeof data.id === 'string' ? data.id : undefined))
   } else if (action === '/api/leads' && method === 'GET') {
     const page = Number(url.searchParams.get('page') ?? 1), stage = url.searchParams.get('stage') ?? '', search = url.searchParams.get('search') ?? ''
     if (!Number.isSafeInteger(page) || page < 1 || page > 100000 || search.length > 200 || (stage && !LEAD_STAGES.includes(stage as LeadStage))) throw new ChatError('Bộ lọc không hợp lệ.')

@@ -7,7 +7,7 @@ import './overview.css'
 
 export default function AutomationPage() {
   const { data, error } = useChatPolling(automationApi.state, 3000)
-  const enabled = Boolean(data?.rule?.enabled)
+  const enabled = Boolean(data?.rules?.some(rule => rule.enabled) ?? data?.rule?.enabled)
   const connected = data?.connection === 'connected'
   const status = !data ? 'Đang tải' : !enabled ? 'Đang tắt' : connected ? 'Đang hoạt động' : 'Chờ kết nối'
 
@@ -48,8 +48,8 @@ export default function AutomationPage() {
             </div>
           </div>
           <div className="auto-tool-card__stats">
-            <span><small>Nhóm theo dõi</small><strong>{data?.rule?.groupName || 'Chưa cấu hình'}</strong></span>
-            <span><small>Nhóm nhận</small><strong>{data?.rule?.targetGroupName || 'Chưa cấu hình'}</strong></span>
+            <span><small>Nhóm theo dõi</small><strong>{data?.rules?.length ? `${data.rules.length} cấu hình nhận nhóm` : data?.rule?.groupName || 'Chưa cấu hình'}</strong></span>
+            <span><small>Nhóm nhận</small><strong>{data?.rules?.length ? `${data.rules.filter(rule => rule.enabled).length} đang bật` : data?.rule?.targetGroupName || 'Chưa cấu hình'}</strong></span>
           </div>
           <div className="auto-tool-card__actions">
             <Link className="auto-tool-card__secondary" to="/leads">Xem lead</Link>

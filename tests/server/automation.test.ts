@@ -131,3 +131,61 @@ test('automation HTTP validates inputs and rejects foreign origins before side e
   const saved = await fetch(`${base}/api/automation/rule`, { method: 'POST', headers, body: JSON.stringify({ accountId: '99', groupId: '22', senderId: '11', targetGroupId: '33' }) })
   assert.equal(saved.status, 200); assert.equal(f.store.rule()?.enabled, false); assert.equal(f.calls.length, 0)
 })
+
+test('multiple group rules keep leads and pending work independent', async (t) => {
+  const f = automationFixture(new AutomationStore(), 60_000); t.after(() => f.service.close())
+  await f.enable()
+  const snapshot = await f.service.configure('99', '33', '11', '22', null)
+  const second = snapshot.rules.find(rule => rule.id !== 'group-leads')!
+  assert.ok(second); assert.equal(second.enabled, false)
+  assert.equal(f.store.rule()?.enabled, true)
+  await f.service.toggle(true, second.id)
+  f.emit(incoming('same-message'))
+  const other = incoming('same-message'); other.message.threadId = '33'; f.emit(other)
+  assert.equal(f.store.stats().total, 2)
+  assert.equal(f.store.jobs('pending').length, 2)
+  await f.service.toggle(false, 'group-leads')
+  assert.equal(f.store.jobs('cancelled').length, 1)
+  assert.equal(f.store.jobs('pending').length, 1)
+  assert.equal(f.store.jobs('pending')[0]?.targetGroupId, '22')
+  const job = f.store.jobs('pending')[0]!; f.store.saveJob({ ...job, notBefore: 0 })
+  await f.drain()
+  assert.equal(f.store.stats().sent, 1)
+  assert.equal(f.calls.filter(call => call.kind === 'send-message')[0]?.id, '22')
+  await assert.rejects(f.service.configure('99', '33', '11', '22', null), /đã tồn tại/)
+  await assert.rejects(f.service.configure('99', '33', '12', '22', second.id), /Tắt quy tắc/)
+  await f.service.toggle(false, second.id)
+  await f.service.configure('99', '33', '12', '22', second.id)
+  assert.equal(f.store.rules().length, 2)
+  assert.equal(f.store.rule(second.id)?.senderId, '12')
+})
+
+test('two destinations for one source each receive the message once', async (t) => {
+  const f = automationFixture(); t.after(() => f.service.close())
+  await f.enable()
+  const original = f.store.rule()!
+  f.store.saveRule({ ...original, id: 'another-destination', targetGroupId: '44', revision: 'second-revision' })
+  await f.service.tick()
+  f.emit(incoming('shared-source')); f.emit(incoming('shared-source'))
+  await f.drain()
+  assert.equal(f.store.stats().total, 2)
+  assert.deepEqual(f.calls.filter(call => call.kind === 'send-message').map(call => call.id), ['33', '44'])
+})
+
+test('HTTP creates a separate rule while the existing rule stays enabled', async (t) => {
+  const f = automationFixture(); await f.enable()
+  const server = createApp(f.accounts as AccountService, 3001, f.service)
+  server.listen(0, '127.0.0.1'); await new Promise<void>(resolve => server.once('listening', resolve))
+  t.after(async () => { server.closeAllConnections(); server.close(); await f.service.close() })
+  const address = server.address(); assert.ok(address && typeof address !== 'string')
+  const response = await fetch(`http://127.0.0.1:${address.port}/api/automation/rule`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Zalo-Tool': '1' },
+    body: JSON.stringify({ id: null, accountId: '99', groupId: '33', senderId: '11', targetGroupId: '22' }),
+  })
+  assert.equal(response.status, 200)
+  const state = await response.json() as { rules: { id: string; enabled: boolean }[] }
+  assert.equal(state.rules.length, 2)
+  assert.equal(state.rules.find(rule => rule.id === 'group-leads')?.enabled, true)
+  assert.equal(state.rules.find(rule => rule.id !== 'group-leads')?.enabled, false)
+  assert.equal(f.calls.length, 0)
+})

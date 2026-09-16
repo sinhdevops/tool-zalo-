@@ -104,3 +104,14 @@
   .auto-detail-footer-card { align-items: flex-start; flex-direction: column; }
   .auto-detail-footer-card > a { width: 100%; box-sizing: border-box; justify-content: center; }
 }
+
+.auto-rule-section { margin: 20px 0; }
+.auto-rule-section__heading { display: flex; justify-content: space-between; gap: 12px; align-items: center; margin-bottom: 16px; }
+.auto-rule-section__heading h2 { font-size: 18px; margin: 0; }
+.auto-rule-section__heading > span { font-size: 13px; color: #75849c; }
+.auto-rules-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
+.auto-rules-grid .auto-detail-card__heading { flex-wrap: wrap; gap: 12px; }
+.auto-rules-grid .auto-detail-card__heading h2, .auto-rules-grid dd { overflow-wrap: anywhere; }
+.auto-rule-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
+.auto-rule-process { margin-bottom: 18px; }
+@media (max-width: 900px) { .auto-rules-grid { grid-template-columns: 1fr; } .auto-rule-section__heading { flex-wrap: wrap; } }

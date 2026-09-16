@@ -19,5 +19,5 @@ export interface AutomationLog { id: number; at: number; text: string; leadId?: 
 export interface AutomationLogs { logs: AutomationLog[]; limit: number }
 export interface IncomingMessage { message: ChatMessage; clientId: string }
 export interface GroupMember { id: string; name: string }
-export interface AutomationSnapshot { rule: AutomationRule | null; connection: string; error: string; total: number; sent: number; waiting: number }
+export interface AutomationSnapshot { rules?: (AutomationRule & { connection: string })[]; rule: AutomationRule | null; connection: string; error: string; total: number; sent: number; waiting: number }
 export const leadStatusLabels: Record<LeadStatus, string> = { waiting: 'Chờ xử lý', queued: 'Chờ chuyển tiếp', friend: 'Dữ liệu cũ', sending: 'Đang chuyển tiếp', sent: 'Đã chuyển tiếp', review: 'Cần kiểm tra' }

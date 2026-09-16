@@ -10,18 +10,18 @@ import { phones, orderFields } from './parse.ts'
 export class AutomationService {
   private accounts: Pick<AccountService, 'getMessaging'>
   readonly store: AutomationStore
-  private binding?: { accountId: string; chat: MessagingConnection; unsubscribe: () => void }
+  private bindings = new Map<string, { chat: MessagingConnection; unsubscribe: () => void }>()
   private timer?: ReturnType<typeof setInterval>
   private busy = false
   private connecting = false
   private closed = false
   private fault = ''
-  private lastReconnect = 0
-  private backfilledRevision = ''
+  private lastReconnect = new Map<string, number>()
+  private backfilledRevisions = new Map<string, string>()
   private settleMs?: number
   constructor(accounts: Pick<AccountService, 'getMessaging'>, store: AutomationStore, settleMs?: number) { this.accounts = accounts; this.store = store; this.settleMs = settleMs }
   start() { this.timer = setInterval(() => { void this.tick() }, 1500); this.timer.unref(); void this.tick() }
-  snapshot() { return { rule: this.store.rule(), connection: this.binding?.chat.status() ?? 'disconnected', error: this.fault, ...this.store.stats() } }
+  snapshot() { const rules = this.store.rules().map(rule => ({ ...rule, connection: this.bindings.get(rule.accountId)?.chat.status() ?? 'disconnected' })); return { rules, rule: this.store.rule(), connection: rules.some(rule => rule.enabled && rule.connection === 'connected') ? 'connected' : 'disconnected', error: this.fault, ...this.store.stats() } }
   async choices(accountId: string, groupId?: string) {
     const chat = this.accounts.getMessaging(accountId)
     if (groupId) return { members: await chat.groupMembers(groupId) }
@@ -39,27 +39,31 @@ export class AutomationService {
     if (!group || !targetGroup || !sender) throw new ChatError('Không tìm thấy nhóm hoặc thành viên đã chọn.')
     return { groupName: group.name, senderName: sender.name, targetGroupName: targetGroup.name }
   }
-  async configure(accountId: string, groupId: string, senderId: string, targetGroupId: string) {
-    if (this.store.rule()?.enabled || this.busy) throw new ChatError('Tắt quy tắc và chờ thao tác hiện tại hoàn tất trước khi đổi cấu hình.', 409)
+  async configure(accountId: string, groupId: string, senderId: string, targetGroupId: string, id: string | null = 'group-leads') {
+    const ruleId = id ?? randomUUID()
+    const previous = this.store.rule(ruleId)
+    if (id && id !== 'group-leads' && !previous) throw new ChatError('Không tìm thấy cấu hình.', 404)
+    if (previous?.enabled) throw new ChatError('Tắt quy tắc và chờ thao tác hiện tại hoàn tất trước khi đổi cấu hình.', 409)
     const names = await this.validate(accountId, groupId, senderId, targetGroupId)
-    if (this.closed || this.store.rule()?.enabled || this.busy) throw new ChatError('Trạng thái đã thay đổi. Hãy tải lại.', 409)
-    const rule: AutomationRule = { id: 'group-leads', accountId, groupId, senderId, targetGroupId, ...names, enabled: false, enabledAt: 0, revision: randomUUID() }
+    if (this.closed || this.store.rule(ruleId)?.enabled || this.store.rule(ruleId)?.revision !== previous?.revision) throw new ChatError('Trạng thái đã thay đổi. Hãy tải lại.', 409)
+    if (this.store.rules().some(rule => rule.id !== ruleId && rule.accountId === accountId && rule.groupId === groupId && rule.senderId === senderId && rule.targetGroupId === targetGroupId)) throw new ChatError('Cấu hình nhận nhóm này đã tồn tại.', 409)
+    const rule: AutomationRule = { id: ruleId, accountId, groupId, senderId, targetGroupId, ...names, enabled: false, enabledAt: 0, revision: randomUUID() }
     this.store.saveRule(rule); this.store.log('Đã lưu cấu hình trực nhóm. Quy tắc đang tắt.')
     return this.snapshot()
   }
-  async toggle(enabled: boolean) {
-    const rule = this.store.rule()
+  async toggle(enabled: boolean, id = 'group-leads') {
+    const rule = this.store.rule(id)
     if (!rule) throw new ChatError('Lưu cấu hình trước khi bật quy tắc.')
     if (rule.enabled === enabled) return this.snapshot()
     if (enabled) {
       if (this.busy) throw new ChatError('Chờ thao tác đang chạy hoàn tất.', 409)
       if (!rule.targetGroupId) throw new ChatError('Mở Cấu hình và chọn nhóm nhận số trước khi bật quy tắc.')
       await this.validate(rule.accountId, rule.groupId, rule.senderId, rule.targetGroupId)
-      if (this.closed || this.store.rule()?.revision !== rule.revision) throw new ChatError('Cấu hình đã thay đổi. Hãy tải lại.', 409)
+      if (this.closed || this.store.rule(id)?.revision !== rule.revision) throw new ChatError('Cấu hình đã thay đổi. Hãy tải lại.', 409)
     }
     this.store.transaction(() => {
       this.store.saveRule({ ...rule, enabled, ...(enabled ? { enabledAt: Date.now(), revision: randomUUID() } : {}) })
-      if (!enabled) for (const job of this.store.jobs('pending')) this.cancel(job)
+      if (!enabled) for (const job of this.store.jobs('pending')) if (job.revision === rule.revision) this.cancel(job)
       this.store.log(enabled ? 'Đã bật trực nhóm. Chỉ xử lý tin mới từ thời điểm này.' : 'Đã tắt trực nhóm. Thao tác đã gửi tới Zalo có thể vẫn hoàn tất.')
     })
     this.fault = ''
@@ -75,8 +79,9 @@ export class AutomationService {
     if (cardPhones.length !== 1) return
     this.store.enrichLeadFromCard(scope, cardPhones[0]!, card.name, card.contactId)
   }
+  private scope(rule: AutomationRule) { return `${rule.accountId}:${rule.groupId}:${rule.senderId}${rule.id === 'group-leads' ? '' : ':' + rule.id}` }
   private backfillCardNames(rule: AutomationRule, chat: MessagingConnection) {
-    const scope = `${rule.accountId}:${rule.groupId}:${rule.senderId}`
+    const scope = this.scope(rule)
     for (const message of chat.messages('group', rule.groupId).messages) {
       if (message.senderId !== rule.senderId) continue
       for (const attachment of message.attachments) if (attachment.kind === 'contact') this.applyCardToLead(scope, attachment)
@@ -84,9 +89,12 @@ export class AutomationService {
   }
   ingest(accountId: string, event: IncomingMessage) {
     if (this.closed || this.fault) return
-    const rule = this.store.rule(), m = event.message
+    for (const rule of this.store.rules()) this.ingestRule(rule, accountId, event)
+  }
+  private ingestRule(rule: AutomationRule, accountId: string, event: IncomingMessage) {
+    const m = event.message
     if (!rule?.enabled || rule.accountId !== accountId || m.type !== 'group' || m.threadId !== rule.groupId || m.senderId !== rule.senderId || m.self || m.system || !Number.isFinite(m.timestamp) || m.timestamp < rule.enabledAt) return
-    const scope = `${accountId}:${rule.groupId}:${rule.senderId}`
+    const scope = this.scope(rule)
     const textPhones = phones(m.text)
     const cards = m.attachments.filter((attachment) => attachment.kind === 'contact')
     if (!textPhones.length && !cards.length) return
@@ -119,29 +127,37 @@ export class AutomationService {
   }
   async tick() {
     if (this.closed || this.connecting || this.fault) return
-    const rule = this.store.rule()
-    if (!rule?.enabled) { this.binding?.unsubscribe(); this.binding = undefined; return }
+    const rules = this.store.rules().filter(rule => rule.enabled)
+    const accountIds = new Set(rules.map(rule => rule.accountId))
+    for (const [id, binding] of this.bindings) if (!accountIds.has(id)) { binding.unsubscribe(); this.bindings.delete(id) }
     this.connecting = true
     try {
-      const chat = this.accounts.getMessaging(rule.accountId)
-      if (this.binding?.chat !== chat) {
-        this.binding?.unsubscribe()
-        this.binding = { accountId: rule.accountId, chat, unsubscribe: chat.subscribeIncoming((event) => this.ingest(rule.accountId, event)) }
+      for (const accountId of accountIds) {
+        try {
+          const chat = this.accounts.getMessaging(accountId)
+          if (this.bindings.get(accountId)?.chat !== chat) {
+            this.bindings.get(accountId)?.unsubscribe()
+            this.bindings.set(accountId, { chat, unsubscribe: chat.subscribeIncoming(event => this.ingest(accountId, event)) })
+          }
+          for (const rule of rules.filter(rule => rule.accountId === accountId)) {
+            if (this.backfilledRevisions.get(rule.id) !== rule.revision) { this.backfillCardNames(rule, chat); this.backfilledRevisions.set(rule.id, rule.revision) }
+          }
+          if (chat.status() === 'idle') await chat.list('group')
+          else if (chat.status() === 'disconnected' && Date.now() - (this.lastReconnect.get(accountId) ?? 0) > 30_000) { this.lastReconnect.set(accountId, Date.now()); chat.reconnect() }
+        } catch { this.bindings.get(accountId)?.unsubscribe(); this.bindings.delete(accountId) }
       }
-      if (this.backfilledRevision !== rule.revision) {
-        this.backfillCardNames(rule, chat)
-        this.backfilledRevision = rule.revision
+      if (!this.closed && !this.busy) {
+        for (const job of this.store.jobs('pending')) {
+          if (!this.active(job)) { this.cancel(job); continue }
+          const chat = this.bindings.get(job.accountId)?.chat
+          if (job.notBefore <= Date.now() && chat?.status() === 'connected') {
+            this.busy = true; void this.run(job, chat).finally(() => { this.busy = false }); break
+          }
+        }
       }
-      if (chat.status() === 'idle') await chat.list('group')
-      else if (chat.status() === 'disconnected' && Date.now() - this.lastReconnect > 30_000) { this.lastReconnect = Date.now(); chat.reconnect() }
-      if (!this.closed && !this.busy && chat.status() === 'connected') {
-        const job = this.store.jobs('pending').find((item) => (item.notBefore ?? 0) <= Date.now())
-        if (job) { this.busy = true; void this.run(job, chat).finally(() => { this.busy = false }) }
-      }
-    } catch { this.binding?.unsubscribe(); this.binding = undefined }
-    finally { this.connecting = false }
+    } finally { this.connecting = false }
   }
-  private active(job: Job) { const rule = this.store.rule(); return !this.closed && !this.fault && rule?.enabled && rule.revision === job.revision && rule.accountId === job.accountId }
+  private active(job: Job) { return !this.closed && !this.fault && this.store.rules().some(rule => rule.enabled && rule.revision === job.revision && rule.accountId === job.accountId) }
   private async run(job: Job, chat: MessagingConnection) {
     try {
       if (!this.active(job)) { this.cancel(job); return }
@@ -178,7 +194,7 @@ export class AutomationService {
     }
   }
   async close() {
-    this.closed = true; clearInterval(this.timer); this.binding?.unsubscribe()
+    this.closed = true; clearInterval(this.timer); this.bindings.forEach(binding => binding.unsubscribe())
     // Keep the database open for any acknowledgement already in flight; process exit closes it.
     if (!this.busy) this.store.close()
   }

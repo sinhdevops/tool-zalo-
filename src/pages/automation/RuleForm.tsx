@@ -33,12 +33,12 @@ export default function RuleForm({ rule, accounts, onClose, onSaved }: { rule: A
   }, [accountId, groupId])
   async function save() {
     setBusy(true); setError('')
-    try { await automationApi.configure(accountId, groupId, senderId, targetGroupId); onSaved() }
+    try { await automationApi.configure(accountId, groupId, senderId, targetGroupId, rule?.id ?? null); onSaved() }
     catch (cause) { setError(cause instanceof Error ? cause.message : 'Chưa lưu được cấu hình.') }
     finally { setBusy(false) }
   }
-  return <Modal title="Cấu hình trực nhóm" onClose={onClose} closeDisabled={busy}><form className="auto-form" onSubmit={(e) => { e.preventDefault(); void save() }}>
-    <p>Chọn đúng nguồn nhận lead. Sau khi lưu, bạn bật quy tắc tại card tính năng.</p>
+  return <Modal title={rule ? "Chỉnh sửa nhận nhóm" : "Tạo nhận nhóm mới"} onClose={onClose} closeDisabled={busy}><form className="auto-form" onSubmit={(e) => { e.preventDefault(); void save() }}>
+    <p>Chọn đúng nguồn nhận lead. Sau khi lưu, bạn bật quy tắc tại mục nhận nhóm tương ứng.</p>
     <Dropdown<string> label="Tài khoản trực" required value={accountId} disabled={busy} placeholder="Chọn tài khoản" options={accounts.map((a) => ({ value: a.id, label: `${a.displayName} · ${a.id}`, disabled: a.status !== 'connected' }))} onChange={(value) => { setAccount(value); setGroup(''); setSender(''); setTargetGroup(''); setGroups([]); setMembers([]) }} />
     <Dropdown<string> label="Nhóm theo dõi" required value={groupId} disabled={busy || !groups.length} placeholder={accountId && !groups.length ? 'Đang tải nhóm…' : 'Chọn nhóm'} options={groups.map((g) => ({ value: g.id, label: g.name }))} onChange={(value) => { setGroup(value); setSender(''); setMembers([]) }} />
     <Dropdown<string> label="Chỉ nhận tin từ" required value={senderId} disabled={busy || !members.length} placeholder={groupId && !members.length ? 'Đang tải thành viên…' : 'Chọn người gửi'} options={members.filter((m) => m.id !== accountId).map((m) => ({ value: m.id, label: `${m.name} · ${m.id}` }))} onChange={setSender} />

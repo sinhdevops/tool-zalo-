@@ -13,8 +13,8 @@ export const automationApi = {
   logs: (signal: AbortSignal) => request<AutomationLogs>('/api/automation/logs', signal),
   groups: (accountId: string, signal: AbortSignal) => request<{ groups: Conversation[] }>(`/api/automation/choices?${new URLSearchParams({ accountId })}`, signal),
   members: (accountId: string, groupId: string, signal: AbortSignal) => request<{ members: GroupMember[] }>(`/api/automation/choices?${new URLSearchParams({ accountId, groupId })}`, signal),
-  configure: (accountId: string, groupId: string, senderId: string, targetGroupId: string) => request<AutomationSnapshot>('/api/automation/rule', undefined, { accountId, groupId, senderId, targetGroupId }),
-  toggle: (enabled: boolean) => request<AutomationSnapshot>('/api/automation/enabled', undefined, { enabled }),
+  configure: (accountId: string, groupId: string, senderId: string, targetGroupId: string, id: string | null = null) => request<AutomationSnapshot>('/api/automation/rule', undefined, { accountId, groupId, senderId, targetGroupId, id }),
+  toggle: (enabled: boolean, id?: string) => request<AutomationSnapshot>('/api/automation/enabled', undefined, { enabled, id }),
   leads: (search: string, stage: string, page: number, signal: AbortSignal) => request<{ leads: Lead[]; total: number; page: number }>(`/api/leads?${new URLSearchParams({ search, stage, page: String(page) })}`, signal),
   editLead: (lead: Lead, fields: { name: string; phone: string; address: string; plan: string; stage: LeadStage }) => request<Lead>(`/api/leads/${encodeURIComponent(lead.id)}`, undefined, { ...fields, updatedAt: lead.updatedAt }),
 }
