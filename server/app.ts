@@ -37,6 +37,17 @@ export function createApp(service: AccountService, port: number, automation?: Au
       if (!allowedHosts.has(request.headers.host ?? '') || (request.headers.origin && !allowedOrigins.has(request.headers.origin))) {
         json(response, 403, { error: 'Nguồn yêu cầu không được phép.' }); return
       }
+      response.setHeader('Vary', 'Origin')
+      if (request.headers.origin) {
+        response.setHeader('Access-Control-Allow-Origin', request.headers.origin)
+      }
+      if (method === 'OPTIONS') {
+        response.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS')
+        response.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Zalo-Tool')
+        response.writeHead(204)
+        response.end()
+        return
+      }
       if (method !== 'GET' && (request.headers['x-zalo-tool'] !== '1' || !request.headers['content-type']?.startsWith('application/json'))) {
         json(response, 403, { error: 'Yêu cầu không hợp lệ.' }); return
       }

@@ -123,23 +123,41 @@ test('session storage is encrypted, authenticated and reloadable', async () => {
 test('HTTP API rejects foreign origins and serves QR status without credentials', async (t) => {
   const gateway = new FakeGateway(); const service = new AccountService(new MemoryStore(), gateway)
   await service.initialize()
-  const server = createApp(service, 3001)
+  const origin = 'https://tool-zalo-rosy.vercel.app'
+  const server = createApp(service, 3001, undefined, { allowedOrigins: [origin] })
   server.listen(0, '127.0.0.1'); await new Promise<void>((resolve) => server.once('listening', resolve))
   t.after(() => { service.shutdown(); server.closeAllConnections(); server.close() })
   const address = server.address(); assert.ok(address && typeof address !== 'string')
   const base = `http://127.0.0.1:${address.port}`
   const headers = { Host: '127.0.0.1:3001', 'X-Zalo-Tool': '1', 'Content-Type': 'application/json' }
   const id = '12345678-1234-1234-1234-123456789abc'
+  for (const method of ['GET', 'POST', 'DELETE']) {
+    const preflight = await fetch(`${base}/api/account-logins/${id}`, {
+      method: 'OPTIONS',
+      headers: { Origin: origin, 'Access-Control-Request-Method': method, 'Access-Control-Request-Headers': 'content-type,x-zalo-tool' },
+    })
+    assert.equal(preflight.status, 204)
+    assert.equal(preflight.headers.get('access-control-allow-origin'), origin)
+    assert.ok(preflight.headers.get('access-control-allow-methods')?.includes(method))
+    assert.equal(preflight.headers.get('access-control-allow-headers'), 'Content-Type, X-Zalo-Tool')
+    assert.equal(gateway.requests.length, 0)
+  }
+  const deniedPreflight = await fetch(`${base}/api/accounts`, { method: 'OPTIONS', headers: { Origin: 'https://untrusted.example', 'Access-Control-Request-Method': 'GET' } })
+  assert.equal(deniedPreflight.status, 403)
+  assert.equal(deniedPreflight.headers.get('access-control-allow-origin'), null)
   const denied = await fetch(`${base}/api/account-logins/${id}`, { method: 'POST', headers: { ...headers, Origin: 'https://untrusted.example' } })
   assert.equal(denied.status, 403); assert.equal(gateway.requests.length, 0)
   const missingHeader = await fetch(`${base}/api/account-logins/${id}`, { method: 'POST', headers: { Host: headers.Host } })
   assert.equal(missingHeader.status, 403)
-  const created = await fetch(`${base}/api/account-logins/${id}`, { method: 'POST', headers })
+  const created = await fetch(`${base}/api/account-logins/${id}`, { method: 'POST', headers: { ...headers, Origin: origin } })
+  assert.equal(created.headers.get('access-control-allow-origin'), origin)
   assert.equal(created.status, 202)
   const duplicate = await fetch(`${base}/api/account-logins/${id}`, { method: 'POST', headers })
   assert.equal(duplicate.status, 202); assert.equal(gateway.requests.length, 1)
   gateway.next().resolve(connection()); await eventually(() => service.getLogin(id)?.status === 'success')
-  const response = await fetch(`${base}/api/accounts`, { headers })
+  const response = await fetch(`${base}/api/accounts`, { headers: { ...headers, Origin: origin } })
+  assert.equal(response.headers.get('access-control-allow-origin'), origin)
+  assert.equal(response.headers.get('vary'), 'Origin')
   assert.equal(response.headers.get('cache-control'), 'no-store')
   const body = await response.text(); assert.ok(body.includes('Tài khoản kiểm thử')); assert.ok(!body.includes('test-imei-secret'))
 })

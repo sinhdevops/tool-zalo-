@@ -1,7 +1,8 @@
 import type { AutomationLogs, AutomationSnapshot, GroupMember, Lead, LeadStage } from '../../../shared/automation'
 import type { Conversation } from '../../../shared/messages'
+import { apiUrl } from '../../api-url'
 async function request<T>(path: string, signal?: AbortSignal, data?: unknown): Promise<T> {
-  const response = await fetch(path, { method: data === undefined ? 'GET' : 'POST', headers: { 'Content-Type': 'application/json', 'X-Zalo-Tool': '1' }, body: data === undefined ? undefined : JSON.stringify(data), signal: AbortSignal.any([AbortSignal.timeout(45000), ...(signal ? [signal] : [])]) })
+  const response = await fetch(apiUrl(path), { method: data === undefined ? 'GET' : 'POST', headers: { 'Content-Type': 'application/json', 'X-Zalo-Tool': '1' }, body: data === undefined ? undefined : JSON.stringify(data), signal: AbortSignal.any([AbortSignal.timeout(45000), ...(signal ? [signal] : [])]) })
   const result = await response.json()
   if (!response.ok) throw new Error(result.error || 'Không xử lý được yêu cầu.')
   return result as T
