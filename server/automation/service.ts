@@ -56,7 +56,7 @@ export class AutomationService {
     if (!rule) throw new ChatError('Lưu cấu hình trước khi bật quy tắc.')
     if (rule.enabled === enabled) return this.snapshot()
     if (enabled) {
-      if (this.busy) throw new ChatError('Chờ thao tác đang chạy hoàn tất.', 409)
+      if (this.store.jobs('running').some(job => job.revision === rule.revision)) throw new ChatError('Chờ thao tác của nhóm này hoàn tất.', 409)
       if (!rule.targetGroupId) throw new ChatError('Mở Cấu hình và chọn nhóm nhận số trước khi bật quy tắc.')
       await this.validate(rule.accountId, rule.groupId, rule.senderId, rule.targetGroupId)
       if (this.closed || this.store.rule(id)?.revision !== rule.revision) throw new ChatError('Cấu hình đã thay đổi. Hãy tải lại.', 409)

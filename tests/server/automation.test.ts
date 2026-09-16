@@ -189,3 +189,37 @@ test('HTTP creates a separate rule while the existing rule stays enabled', async
   assert.equal(state.rules.find(rule => rule.id !== 'group-leads')?.enabled, false)
   assert.equal(f.calls.length, 0)
 })
+
+test('HTTP toggle targets the selected rule without changing the first rule', async (t) => {
+  const f = automationFixture(); await f.enable()
+  const state = await f.service.configure('99', '33', '11', '22', null)
+  const second = state.rules.find(rule => rule.id !== 'group-leads')!
+  const server = createApp(f.accounts as AccountService, 3001, f.service)
+  server.listen(0, '127.0.0.1'); await new Promise<void>(resolve => server.once('listening', resolve))
+  t.after(async () => { server.closeAllConnections(); server.close(); await f.service.close() })
+  const address = server.address(); assert.ok(address && typeof address !== 'string')
+  for (const enabled of [true, false]) {
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/automation/enabled`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Zalo-Tool': '1' },
+      body: JSON.stringify({ id: second.id, enabled }),
+    })
+    assert.equal(response.status, 200)
+    assert.equal(f.store.rule(second.id)?.enabled, enabled)
+    assert.equal(f.store.rule()?.enabled, true)
+  }
+})
+
+test('a running delivery in one group does not block enabling another group', async (t) => {
+  const f = automationFixture(); t.after(() => f.service.close()); await f.enable()
+  const state = await f.service.configure('99', '33', '11', '22', null)
+  const second = state.rules.find(rule => rule.id !== 'group-leads')!
+  let release!: () => void
+  f.holdHeart(() => new Promise<void>(resolve => { release = resolve }))
+  f.emit(incoming('in-flight')); await f.service.tick()
+  try {
+    assert.equal(f.store.jobs('running').length, 1)
+    await f.service.toggle(true, second.id)
+    assert.equal(f.store.rule(second.id)?.enabled, true)
+    assert.equal(f.store.rule()?.enabled, true)
+  } finally { release(); await f.drain() }
+})

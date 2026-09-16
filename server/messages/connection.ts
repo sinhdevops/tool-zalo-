@@ -42,6 +42,8 @@ export class ZaloMessagingConnection implements MessagingConnection {
   private sends = new Map<string, { fingerprint: string; result: Promise<string[]> }>()
   private sendBusy = false
   private readyTimer: ReturnType<typeof setTimeout> | undefined
+  private reconnectTimer: ReturnType<typeof setTimeout> | undefined
+  private reconnectAttempts = 0
   private unreadStore: UnreadStore
   private ownsUnreadStore: boolean
   private unreadError?: string
@@ -129,6 +131,9 @@ export class ZaloMessagingConnection implements MessagingConnection {
     api.listener.on('cipher_key', () => {
       if (this.disposed) return
       clearTimeout(this.readyTimer)
+      clearTimeout(this.reconnectTimer)
+      this.reconnectTimer = undefined
+      this.reconnectAttempts = 0
       this.state = 'connected'
       this.history('personal'); this.history('group')
     })
@@ -197,18 +202,33 @@ export class ZaloMessagingConnection implements MessagingConnection {
       if (history.loading) history.error = 'Kết nối bị ngắt khi tải lịch sử. Hãy kết nối lại.'
       history.loading = false
     }
+    this.scheduleReconnect()
+  }
+  private scheduleReconnect() {
+    if (this.disposed || this.reconnectTimer) return
+    const delay = Math.min(30_000, 2000 * 2 ** Math.min(this.reconnectAttempts++, 4))
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = undefined
+      try { this.reconnect() } catch { this.scheduleReconnect() }
+    }, delay)
+    this.reconnectTimer.unref()
   }
   reconnect() {
     if (this.disposed) throw new ChatError('Phiên tài khoản đã đóng.', 409)
     if (this.state === 'connecting' || this.state === 'connected') return
+    clearTimeout(this.reconnectTimer)
+    this.reconnectTimer = undefined
     this.state = 'connecting'
     // SDK retries can outlive account removal; use an explicit reconnect instead.
     try {
       this.api.listener.start({ retryOnClose: false })
-      this.readyTimer = setTimeout(() => { if (this.state === 'connecting') this.api.listener.stop() }, 20_000)
+      this.readyTimer = setTimeout(() => {
+        if (this.state !== 'connecting' || this.disposed) return
+        try { this.api.listener.stop() } finally { this.onDisconnected() }
+      }, 20_000)
       this.readyTimer.unref()
     }
-    catch { this.state = 'disconnected'; throw new ChatError('Không mở được kết nối Zalo.', 503) }
+    catch { this.onDisconnected(); throw new ChatError('Không mở được kết nối Zalo.', 503) }
   }
   phoneSync(): PhoneSyncState { return this.phoneSyncController.status() }
   requestPhoneSync(): Promise<PhoneSyncState> {
@@ -550,6 +570,7 @@ export class ZaloMessagingConnection implements MessagingConnection {
     this.disposed = true
     this.phoneSyncController.dispose()
     this.incomingListeners.clear()
+    clearTimeout(this.reconnectTimer)
     clearTimeout(this.readyTimer)
     for (const history of Object.values(this.histories)) clearTimeout(history.timer)
     this.api.listener.stop()

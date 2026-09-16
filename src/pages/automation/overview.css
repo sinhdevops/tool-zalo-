@@ -59,8 +59,9 @@
 .auto-detail-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
 .auto-detail-card { padding: 22px; border: 1px solid #dfe7f2; border-radius: 15px; background: #fff; }
 .auto-detail-card__heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding-bottom: 17px; border-bottom: 1px solid #e9eef5; }
-.auto-detail-card__heading > div { display: flex; align-items: center; gap: 10px; }
-.auto-detail-card__heading span { display: grid; place-items: center; width: 27px; height: 27px; border-radius: 8px; color: #316ad2; background: #edf4ff; font-size: 10px; font-weight: 750; }
+.auto-detail-card__heading > div { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.auto-detail-card__heading > div > span { display: grid; place-items: center; width: 27px; height: 27px; flex-shrink: 0; border-radius: 8px; color: #316ad2; background: #edf4ff; font-size: 10px; font-weight: 750; }
+.auto-detail-card__heading > .auto-tool-status { flex: 0 0 auto; margin-left: auto; }
 .auto-detail-card__heading h2 { margin: 0; color: #253b57; font-size: 15px; }
 .auto-detail-card__heading button { border: 0; background: transparent; color: #2563eb; font-size: 11px; font-weight: 650; cursor: pointer; }
 .auto-detail-card__heading button:disabled { color: #a4afbc; cursor: not-allowed; }

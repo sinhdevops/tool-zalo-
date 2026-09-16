@@ -396,3 +396,31 @@ test('chat HTTP rejects unauthenticated account, cross-origin sends and malforme
   assert.equal(read.status, 200)
   assert.equal((await read.json() as { count: number }).count, 0)
 })
+
+test('listener reconnects after a disconnect and resumes live incoming events', (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const f = fixture(); t.after(() => f.chat.dispose())
+  let starts = 0; f.listener.start = () => { starts++ }
+  let received = 0; f.chat.subscribeIncoming(() => { received++ })
+  f.listener.emit('disconnected', 1006)
+  t.mock.timers.tick(2000)
+  assert.equal(starts, 1); assert.equal(f.chat.status(), 'connecting')
+  f.listener.emit('cipher_key', 'synthetic')
+  f.listener.emit('message', new UserMessage('99', payload('900')))
+  assert.equal(f.chat.status(), 'connected'); assert.equal(received, 1)
+  f.listener.emit('disconnected', 1006)
+  f.chat.dispose(); t.mock.timers.tick(30_000)
+  assert.equal(starts, 1)
+})
+
+test('handshake timeout retries even when SDK stop emits no close event', (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const f = fixture(); t.after(() => f.chat.dispose())
+  f.listener.emit('disconnected', 1006)
+  let starts = 0; f.listener.start = () => { starts++ }; f.listener.stop = () => {}
+  f.chat.reconnect()
+  t.mock.timers.tick(20_000)
+  assert.equal(f.chat.status(), 'disconnected')
+  t.mock.timers.tick(4000)
+  assert.equal(starts, 2); assert.equal(f.chat.status(), 'connecting')
+})

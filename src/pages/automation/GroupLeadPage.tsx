@@ -22,7 +22,7 @@ export default function GroupLeadPage() {
 
   async function toggle(rule: AutomationRule) {
     setBusy(true); setActionError('')
-    try { await automationApi.toggle(!rule?.enabled); refresh() }
+    try { await automationApi.toggle(!rule.enabled, rule.id); refresh() }
     catch (cause) { setActionError(cause instanceof Error ? cause.message : 'Không đổi được trạng thái.'); refresh() }
     finally { setBusy(false) }
   }
