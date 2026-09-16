@@ -1,5 +1,7 @@
 # Zalo Tool — React + TypeScript
 
+Triển khai hiện tại: frontend Vercel và backend Docker trên Ubuntu. Xem [hướng dẫn Docker, HTTPS, backup và cập nhật](deploy/README.md). Cấu hình Railway bên dưới chỉ dành cho phương án triển khai cũ.
+
 Ứng dụng dùng React 19, Vite, TypeScript strict và React Hook Form. Mã nguồn ứng dụng dùng `.ts`/`.tsx`; cấu hình Vite và ESLint cũng dùng TypeScript.
 
 ## Chạy dự án

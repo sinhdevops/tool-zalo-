@@ -17,6 +17,7 @@ qr.png
 .env.*
 !.env.example
 .vercel
+backups/
 
 # Editor directories and files
 .vscode/*

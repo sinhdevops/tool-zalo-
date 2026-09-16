@@ -1,0 +1,21 @@
+# Merge this server block into your existing HTTPS virtual host.
+# Change the domain and certificate paths before enabling it.
+server {
+    listen 443 ssl;
+    server_name api.example.com;
+    ssl_certificate /etc/letsencrypt/live/api.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/api.example.com/privkey.pem;
+    # The 10 MB attachment is transmitted as base64 in JSON.
+    client_max_body_size 16m;
+    location /api/ {
+        proxy_pass http://127.0.0.1:3001;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_read_timeout 180s;
+        proxy_send_timeout 180s;
+        proxy_cache off;
+    }
+    location / { return 404; }
+}

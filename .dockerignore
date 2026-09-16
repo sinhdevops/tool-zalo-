@@ -1,0 +1,10 @@
+# Allow only backend source and locked dependencies into the build context.
+**
+!Dockerfile
+!.dockerignore
+!package.json
+!pnpm-lock.yaml
+!server/
+!server/**
+!shared/
+!shared/**

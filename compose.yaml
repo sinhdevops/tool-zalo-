@@ -1,0 +1,35 @@
+name: zalo-tool
+services:
+  backend:
+    image: zalo-tool-backend:${IMAGE_TAG:-local}
+    build:
+      context: .
+      dockerfile: Dockerfile
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 30s
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: "3001"
+      ACCOUNT_DATA_DIR: /data
+      APP_ALLOWED_HOSTS: ${APP_ALLOWED_HOSTS:?Set APP_ALLOWED_HOSTS in .env}
+      APP_ALLOWED_ORIGINS: ${APP_ALLOWED_ORIGINS:?Set APP_ALLOWED_ORIGINS in .env}
+    ports:
+      - "127.0.0.1:${BACKEND_PORT:-3001}:3001"
+    volumes:
+      - backend-data:/data
+    read_only: true
+    tmpfs:
+      - /tmp:size=256m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+volumes:
+  backend-data:
