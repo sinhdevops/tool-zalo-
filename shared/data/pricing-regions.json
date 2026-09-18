@@ -1,0 +1,38 @@
+{
+  "version": 1,
+  "researchedAt": "2026-09-17",
+  "status": "research-draft",
+  "purpose": "Phân vùng bảng giá tư vấn, không phải phân loại hành chính",
+  "sources": [
+    {"url":"https://www.viettel.vn/tin-tuc/chi-tiet/lap-dat-internet-truyen-hinh-ha-noi-tai-viettel-thiet-bi-wifi-6-hien-dai-gia-uu-dai/15827840","kind":"official","supports":"Có bảng giá nội thành và ngoại thành; không liệt kê ranh giới áp dụng"},
+    {"url":"https://internet-viettel.com/noi-thanh/","kind":"sales-site","supports":"Danh sách quận/huyện cũ Hà Nội"},
+    {"url":"https://viettelhcm.vn/","kind":"sales-site","supports":"Danh sách quận/huyện cũ TP.HCM"},
+    {"url":"https://vieteltelecom.vn/lap-dat-internet-viettel-tp-hcm/","kind":"sales-site","supports":"Đối chiếu TP.HCM; đây không phải tên miền vietteltelecom.vn"}
+  ],
+  "cities": [
+    {
+      "id":"ha-noi",
+      "name":"Hà Nội",
+      "aliases":["Hà Nội","Ha Noi","Hanoi","HN"],
+      "legacyInnerDistricts":["Ba Đình","Bắc Từ Liêm","Cầu Giấy","Đống Đa","Hà Đông","Hai Bà Trưng","Hoàn Kiếm","Hoàng Mai","Nam Từ Liêm","Tây Hồ","Thanh Xuân"],
+      "legacyOuterDistricts":["Ba Vì","Chương Mỹ","Đan Phượng","Đông Anh","Gia Lâm","Hoài Đức","Long Biên","Mê Linh","Mỹ Đức","Phú Xuyên","Phúc Thọ","Quốc Oai","Sóc Sơn","Sơn Tây","Thạch Thất","Thanh Oai","Thanh Trì","Thường Tín","Ứng Hòa"]
+    },
+    {
+      "id":"ho-chi-minh",
+      "name":"TP.HCM",
+      "aliases":["Hồ Chí Minh","Ho Chi Minh","HCM","TPHCM","TP.HCM","Sài Gòn","Sai Gon","SG"],
+      "legacyInnerDistricts":["Quận 1","Quận 2","Quận 3","Quận 4","Quận 7","Quận 10","Quận 11","Tân Bình","Tân Phú","Bình Thạnh","Phú Nhuận"],
+      "legacyOuterDistricts":["Quận 5","Quận 6","Quận 8","Quận 9","Quận 12","Bình Tân","Gò Vấp","Quận Thủ Đức","Hóc Môn","Bình Chánh","Củ Chi","Nhà Bè","Cần Giờ"],
+      "ambiguousAliases":["Thủ Đức","TP Thủ Đức","Thành phố Thủ Đức"]
+    }
+  ],
+  "matchingRules": {
+    "input":"Chỉ địa chỉ lắp đặt, không quét tên khách, số điện thoại hoặc toàn bộ lịch sử chat",
+    "normalize":["Không phân biệt hoa thường và dấu tiếng Việt","Chuẩn hóa Q1, Q.1, Q 1 thành Quận 1; khớp nguyên token, tránh Q1 trúng Q10/Q11/Q12"],
+    "otherConfirmedProvince":"outer theo yêu cầu người dùng; bao gồm Huế/Thừa Thiên Huế",
+    "missingOrConflictingLocation":"unknown; hỏi lại địa chỉ, không tự mặc định outer",
+    "newWardOnly":"unknown cho đến khi có bảng ánh xạ phường/xã và ranh giới giá được xác minh",
+    "thuDucCityOnly":"unknown: không gộp Quận 2 cũ với Quận 9/Quận Thủ Đức cũ",
+    "activation":"Dữ liệu nghiên cứu, chưa nối vào báo giá hoặc gửi tin tự động"
+  }
+}

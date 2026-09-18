@@ -5,6 +5,7 @@ import { handleChatRequest } from './messages/http.ts'
 import { ChatError } from './messages/types.ts'
 import type { AutomationService } from './automation/service.ts'
 import { handleAutomation } from './automation/http.ts'
+import { handleAdvisor } from './advisor/http.ts'
 
 function json(response: ServerResponse, status: number, body: unknown) {
   response.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' })
@@ -53,6 +54,7 @@ export function createApp(service: AccountService, port: number, automation?: Au
       }
       if (method === 'GET' && url.pathname === '/api/accounts') { json(response, 200, { accounts: service.listAccounts() }); return }
       if (automation && await handleAutomation(request, response, url, automation, json)) return
+      if (await handleAdvisor(request, response, url, service, json)) return
       if (await handleChatRequest(request, response, url, service, json)) return
       const loginMatch = /^\/api\/account-logins\/([a-f0-9-]{36})$/i.exec(url.pathname)
       if (loginMatch?.[1]) {
