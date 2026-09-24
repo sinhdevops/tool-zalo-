@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { FiAlertCircle, FiArrowLeft, FiCheckCircle, FiClock, FiMessageSquare, FiPhone, FiPlay, FiPlus, FiSquare } from 'react-icons/fi'
 import Modal from '../../components/common/Modal'
@@ -36,9 +36,7 @@ export default function BulkMessagePage() {
   const [busy, setBusy] = useState(false)
   const [actionError, setActionError] = useState('')
 
-  useEffect(() => {
-    if (!accountId && accounts[0]) setAccountId(accounts[0].id)
-  }, [accountId, accounts])
+  const selectedAccountId = accountId || accounts[0]?.id || ''
 
   const progress = useMemo(() => data?.total ? Math.round(((data.sent + data.failed) / data.total) * 100) : 0, [data])
   const runningStatus = data?.running ? (data.pausedReason ? data.pausedReason : 'Đang xử lý danh sách.') : data?.pausedReason || 'Chưa chạy'
@@ -46,7 +44,7 @@ export default function BulkMessagePage() {
   async function createCampaign() {
     setBusy(true); setActionError('')
     try {
-      await automationApi.bulkCreate({ accountId, phones, message, startTime, endTime, delaySeconds })
+      await automationApi.bulkCreate({ accountId: selectedAccountId, phones, message, startTime, endTime, delaySeconds })
       setSettingsOpen(false)
       setPhones('')
       setMessage('')
@@ -102,7 +100,7 @@ export default function BulkMessagePage() {
           <div className="auto-detail-card__heading"><div><span><FiClock /></span><h2>Trạng thái</h2></div></div>
           <dl className="auto-detail-config">
             <div><dt>Tiến độ</dt><dd>{progress}% · {data?.pending ?? 0} số còn lại</dd></div>
-            <div><dt>Khung giờ</dt><dd>{data?.settings ? `${data.settings.startTime}–${data.settings.endTime}` : '07:00–21:00'}</dd></div>
+            <div><dt>Khung giờ (Việt Nam)</dt><dd>{data?.settings ? `${data.settings.startTime}–${data.settings.endTime}` : '07:00–21:00'}</dd></div>
             <div><dt>Delay mỗi lượt</dt><dd>{data?.settings?.delaySeconds ?? delaySeconds} giây</dd></div>
             <div><dt>Nghỉ định kỳ</dt><dd>Sau 2 lượt thành công · nghỉ 60 giây</dd></div>
             <div><dt>Hiện tại</dt><dd>{runningStatus}</dd></div>
@@ -133,7 +131,7 @@ export default function BulkMessagePage() {
                 <td>{accounts.find(account => account.id === campaign.settings.accountId)?.displayName || campaign.settings.accountId}</td>
                 <td><strong>{campaign.items.length}</strong><small>{sent} đã gửi · {failed} lỗi</small></td>
                 <td className="bulk-campaign-message">{campaign.settings.message}</td>
-                <td>{campaign.settings.startTime}–{campaign.settings.endTime}<small>Delay {campaign.settings.delaySeconds}s</small></td>
+                <td>{campaign.settings.startTime}–{campaign.settings.endTime}<small>Giờ Việt Nam · Delay {campaign.settings.delaySeconds}s</small></td>
                 <td><span className={`bulk-status ${campaign.state === 'completed' ? 'sent' : campaign.state === 'running' ? 'sending' : ''}`}>{campaignStateLabels[campaign.state]}</span></td>
                 <td>{isActive
                   ? <button className="auto-button danger" disabled={busy} onClick={() => void stop()}><FiSquare /> Dừng</button>
@@ -155,7 +153,7 @@ export default function BulkMessagePage() {
       {settingsOpen && <Modal title="Tạo cấu hình gửi tin hàng loạt" onClose={() => !busy && setSettingsOpen(false)} closeDisabled={busy}>
         <form className="auto-form bulk-settings" onSubmit={(event) => { event.preventDefault(); void createCampaign() }}>
           <label>Tài khoản Zalo
-            <select value={accountId} onChange={event => setAccountId(event.target.value)} required>
+            <select value={selectedAccountId} onChange={event => setAccountId(event.target.value)} required>
               <option value="">Chọn tài khoản</option>
               {accounts.map(account => <option key={account.id} value={account.id}>{account.displayName} {account.phoneNumber ? `· ${account.phoneNumber}` : ''}</option>)}
             </select>
@@ -167,13 +165,13 @@ export default function BulkMessagePage() {
             <textarea value={message} onChange={event => setMessage(event.target.value)} rows={5} maxLength={2000} placeholder="Nhập nội dung cần gửi…" required />
           </label>
           <div className="bulk-settings__row">
-            <label>Bắt đầu<input type="time" value={startTime} onChange={event => setStartTime(event.target.value)} required /></label>
-            <label>Kết thúc<input type="time" value={endTime} onChange={event => setEndTime(event.target.value)} required /></label>
+            <label>Bắt đầu (giờ VN)<input type="time" value={startTime} onChange={event => setStartTime(event.target.value)} required /></label>
+            <label>Kết thúc (giờ VN)<input type="time" value={endTime} onChange={event => setEndTime(event.target.value)} required /></label>
             <label>Delay (giây)<input type="number" min={5} max={3600} value={delaySeconds} onChange={event => setDelaySeconds(Number(event.target.value))} required /></label>
           </div>
           <div className="auto-note">Bấm “Tạo cấu hình” chỉ lưu vào danh sách, chưa gửi tin. Sau đó bấm “Chạy” ở đúng dòng cần chạy. Khi chạy, sau mỗi 2 lượt gửi thành công liên tiếp tool nghỉ 60 giây.</div>
           {actionError && <p className="auto-error" role="alert">{actionError}</p>}
-          <div className="auto-actions"><button type="button" className="auto-button" disabled={busy} onClick={() => setSettingsOpen(false)}>Hủy</button><button className="auto-button primary" disabled={busy || !accountId}><FiPlus /> {busy ? 'Đang lưu…' : 'Tạo cấu hình'}</button></div>
+          <div className="auto-actions"><button type="button" className="auto-button" disabled={busy} onClick={() => setSettingsOpen(false)}>Hủy</button><button className="auto-button primary" disabled={busy || !selectedAccountId}><FiPlus /> {busy ? 'Đang lưu…' : 'Tạo cấu hình'}</button></div>
         </form>
       </Modal>}
     </div>

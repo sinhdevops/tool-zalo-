@@ -7,6 +7,12 @@ import { AutomationStore } from './store.ts'
 import type { Job } from './store.ts'
 import { phones, orderFields } from './parse.ts'
 
+// Campaign schedules are entered in Vietnam time, regardless of the server's timezone.
+export function withinVietnamTimeWindow(start: number, end: number, now: Date) {
+  const current = ((now.getUTCHours() + 7) % 24) * 60 + now.getUTCMinutes()
+  return current >= start && current < end
+}
+
 export class AutomationService {
   private accounts: Pick<AccountService, 'getMessaging'>
   readonly store: AutomationStore
@@ -27,7 +33,25 @@ export class AutomationService {
   private bulkNextActionAt = 0
   private bulkSuccessCount = 0
   private bulkPausedReason = ''
-  constructor(accounts: Pick<AccountService, 'getMessaging'>, store: AutomationStore, settleMs?: number) { this.accounts = accounts; this.store = store; this.settleMs = settleMs }
+  private bulkClock: () => Date
+  constructor(accounts: Pick<AccountService, 'getMessaging'>, store: AutomationStore, settleMs?: number, bulkClock: () => Date = () => new Date()) {
+    this.accounts = accounts; this.store = store; this.settleMs = settleMs
+    this.bulkClock = bulkClock
+    const running = store.bulkCampaigns().find(campaign => campaign.state === 'running')
+    if (running) {
+      this.bulkCampaignId = running.id
+      this.bulkSettings = running.settings
+      // An interrupted send may have reached Zalo; never send that number again automatically.
+      this.bulkItems = running.items.map(item => ['searching', 'sending'].includes(item.status)
+        ? { ...item, status: 'error', detail: 'Máy chủ khởi động lại khi đang xử lý số này. Kiểm tra Zalo trước khi gửi lại.' }
+        : item)
+      this.bulkRunning = this.bulkItems.some(item => item.status === 'pending')
+      const lastSentAt = Math.max(0, ...this.bulkItems.map(item => item.sentAt ?? 0))
+      this.bulkNextActionAt = lastSentAt ? lastSentAt + Math.max(running.settings.delaySeconds, running.settings.pauseSeconds) * 1000 : 0
+      this.bulkPausedReason = this.bulkRunning ? 'Đang khôi phục chiến dịch sau khi khởi động lại.' : 'Đã xử lý xong danh sách.'
+      this.saveActiveBulk(this.bulkRunning ? 'running' : 'completed')
+    }
+  }
   start() { this.timer = setInterval(() => { void this.tick() }, 1500); this.timer.unref(); void this.tick() }
   snapshot() { const rules = this.store.rules().map(rule => ({ ...rule, connection: this.bindings.get(rule.accountId)?.chat.status() ?? 'disconnected' })); return { rules, rule: this.store.rule(), connection: rules.some(rule => rule.enabled && rule.connection === 'connected') ? 'connected' : 'disconnected', error: this.fault, ...this.store.stats() } }
   async choices(accountId: string, groupId?: string) {
@@ -134,7 +158,8 @@ export class AutomationService {
     } catch { this.fault = 'Không lưu được dữ liệu tự động hóa. Đã ngừng xử lý; kiểm tra thư mục dữ liệu rồi tắt/bật lại quy tắc.' }
   }
   async tick() {
-    if (this.closed || this.connecting || this.fault) return
+    if (this.closed) return
+    if (this.connecting || this.fault) { await this.tickBulk(); return }
     const rules = this.store.rules().filter(rule => rule.enabled)
     const accountIds = new Set(rules.map(rule => rule.accountId))
     for (const [id, binding] of this.bindings) if (!accountIds.has(id)) { binding.unsubscribe(); this.bindings.delete(id) }
@@ -259,14 +284,14 @@ export class AutomationService {
     this.accounts.getMessaging(campaign.settings.accountId)
     this.bulkCampaignId = campaign.id
     this.bulkSettings = campaign.settings
-    this.bulkItems = campaign.items
+    this.bulkItems = campaign.items.map(item => item.status === 'pending' ? { ...item, detail: 'Đã vào hàng chờ gửi.' } : item)
     this.bulkRunning = true
     this.bulkBusy = false
     this.bulkNextActionAt = 0
     this.bulkSuccessCount = 0
     this.bulkPausedReason = ''
     this.saveActiveBulk('running')
-    void this.tick()
+    void this.tickBulk()
     return this.bulkSnapshot()
   }
 
@@ -299,11 +324,10 @@ export class AutomationService {
     return hour * 60 + minute
   }
 
-  private withinBulkWindow(settings: BulkMessageSettings, now = new Date()) {
+  private withinBulkWindow(settings: BulkMessageSettings, now = this.bulkClock()) {
     const start = this.timeMinutes(settings.startTime) ?? 0
     const end = this.timeMinutes(settings.endTime) ?? 0
-    const current = now.getHours() * 60 + now.getMinutes()
-    return current >= start && current < end
+    return withinVietnamTimeWindow(start, end, now)
   }
 
   private updateBulkItem(id: string, update: Partial<BulkMessageItem>) {
@@ -312,7 +336,8 @@ export class AutomationService {
   }
 
   private async tickBulk() {
-    if (!this.bulkRunning || this.bulkBusy || this.busy || !this.bulkSettings) return
+    if (!this.bulkRunning || this.bulkBusy || !this.bulkSettings) return
+    if (this.busy) { this.bulkPausedReason = 'Đang chờ thao tác trực nhóm hoàn tất.'; return }
     const next = this.bulkItems.find(item => item.status === 'pending')
     if (!next) {
       this.bulkRunning = false
@@ -321,7 +346,7 @@ export class AutomationService {
       return
     }
     if (!this.withinBulkWindow(this.bulkSettings)) {
-      this.bulkPausedReason = `Ngoài khung giờ ${this.bulkSettings.startTime}–${this.bulkSettings.endTime}.`
+      this.bulkPausedReason = `Ngoài khung giờ ${this.bulkSettings.startTime}–${this.bulkSettings.endTime} (giờ Việt Nam).`
       return
     }
     if (Date.now() < this.bulkNextActionAt) {
@@ -329,9 +354,20 @@ export class AutomationService {
       return
     }
     this.bulkPausedReason = ''
-    const chat = this.accounts.getMessaging(this.bulkSettings.accountId)
+    let chat: MessagingConnection
+    try { chat = this.accounts.getMessaging(this.bulkSettings.accountId) }
+    catch (cause) {
+      this.bulkPausedReason = cause instanceof Error ? cause.message : 'Tài khoản Zalo chưa kết nối.'
+      return
+    }
     if (chat.status() !== 'connected') {
-      if (chat.status() === 'disconnected') chat.reconnect()
+      if (['idle', 'disconnected'].includes(chat.status()) && Date.now() - (this.lastReconnect.get(this.bulkSettings.accountId) ?? 0) > 30_000) {
+        this.lastReconnect.set(this.bulkSettings.accountId, Date.now())
+        try { chat.reconnect() } catch (cause) {
+          this.bulkPausedReason = cause instanceof Error ? cause.message : 'Không thể kết nối lại Zalo.'
+          return
+        }
+      }
       this.bulkPausedReason = 'Đang chờ tài khoản Zalo kết nối.'
       return
     }
@@ -363,6 +399,6 @@ export class AutomationService {
   async close() {
     this.closed = true; clearInterval(this.timer); this.bindings.forEach(binding => binding.unsubscribe())
     // Keep the database open for any acknowledgement already in flight; process exit closes it.
-    if (!this.busy) this.store.close()
+    if (!this.busy && !this.bulkBusy) this.store.close()
   }
 }

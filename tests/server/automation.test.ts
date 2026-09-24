@@ -6,12 +6,81 @@ import { join } from 'node:path'
 import { phones } from '../../server/automation/parse.ts'
 import { AutomationStore } from '../../server/automation/store.ts'
 import { automationFixture, incoming, contact } from '../fixtures/automation.ts'
+import { withinVietnamTimeWindow } from '../../server/automation/service.ts'
 import { createApp } from '../../server/app.ts'
 import type { AccountService } from '../../server/accounts/service.ts'
 
 test('Vietnamese phones normalize country prefix and separators, reject dates, UIDs and malformed numbers', () => {
   assert.deepEqual(phones('090 000 0000; +84 900 000 000; 84900000000; 038-000-0000'), ['0900000000', '0380000000'])
   assert.deepEqual(phones('2026-09-03 1230900000000123 abc0900000000 0200000000'), [])
+})
+
+test('bulk schedule uses Vietnam time even when the server uses UTC', () => {
+  const start = 7 * 60, end = 21 * 60
+  assert.equal(withinVietnamTimeWindow(start, end, new Date('2026-09-24T05:07:00Z')), true) // 12:07 VN
+  assert.equal(withinVietnamTimeWindow(start, end, new Date('2026-09-24T23:59:00Z')), false) // 06:59 VN
+  assert.equal(withinVietnamTimeWindow(start, end, new Date('2026-09-24T14:00:00Z')), false) // 21:00 VN
+})
+
+const bulkSettings = { accountId: '99', message: 'Tin nhắn kiểm thử', startTime: '07:00', endTime: '21:00', delaySeconds: 15, pauseEvery: 2, pauseSeconds: 60 }
+
+test('starting a bulk campaign searches and sends during Vietnam daytime', async (t) => {
+  const f = automationFixture(new AutomationStore(), 0, () => new Date('2026-09-24T05:07:00Z'))
+  t.after(() => f.service.close())
+  const id = f.service.createBulk(bulkSettings, ['0900000000']).campaigns[0]!.id
+  f.service.startBulk(id)
+  await f.drain()
+  assert.deepEqual(f.calls.filter(call => call.kind === 'find-user' || call.kind === 'bulk-send'), [
+    { kind: 'find-user', id: '0900000000' }, { kind: 'bulk-send', id: '123', text: bulkSettings.message },
+  ])
+  assert.equal(f.service.bulkSnapshot().sent, 1)
+  assert.equal(f.service.bulkSnapshot().running, false)
+})
+
+test('bulk campaign shows why it is waiting, then proceeds when Vietnam schedule opens', async (t) => {
+  let clock = new Date('2026-09-24T22:07:00Z') // 05:07 VN
+  const f = automationFixture(new AutomationStore(), 0, () => clock)
+  t.after(() => f.service.close())
+  const id = f.service.createBulk(bulkSettings, ['0900000000']).campaigns[0]!.id
+  f.service.startBulk(id)
+  await f.drain()
+  assert.match(f.service.bulkSnapshot().pausedReason, /Ngoài khung giờ.*Việt Nam/)
+  assert.equal(f.service.bulkSnapshot().items[0]?.detail, 'Đã vào hàng chờ gửi.')
+  assert.equal(f.calls.length, 0)
+  clock = new Date('2026-09-25T05:07:00Z')
+  await f.drain()
+  assert.equal(f.service.bulkSnapshot().sent, 1)
+})
+
+test('bulk campaign waits for account connection and sends when it reconnects', async (t) => {
+  const f = automationFixture(new AutomationStore(), 0, () => new Date('2026-09-24T05:07:00Z'))
+  t.after(() => f.service.close())
+  const id = f.service.createBulk(bulkSettings, ['0900000000']).campaigns[0]!.id
+  f.setConnection('connecting')
+  f.service.startBulk(id)
+  assert.match(f.service.bulkSnapshot().pausedReason, /chờ tài khoản Zalo kết nối/)
+  f.setConnection('connected')
+  await f.drain()
+  assert.equal(f.service.bulkSnapshot().sent, 1)
+})
+
+test('a restarted campaign resumes pending numbers but does not resend an interrupted number', async (t) => {
+  const store = new AutomationStore()
+  store.saveBulkCampaign({
+    id: 'restart', createdAt: 1, updatedAt: 2, state: 'running', settings: bulkSettings,
+    items: [
+      { id: 'interrupted', phone: '0900000000', status: 'sending', detail: 'Đang gửi.' },
+      { id: 'pending', phone: '0380000000', status: 'pending', detail: 'Chờ bấm Chạy.' },
+    ],
+  })
+  const f = automationFixture(store, 0, () => new Date('2026-09-24T05:07:00Z'))
+  t.after(() => f.service.close())
+  assert.equal(f.service.bulkSnapshot().items[0]?.status, 'error')
+  assert.equal(f.service.bulkSnapshot().running, true)
+  await f.drain()
+  assert.deepEqual(f.calls.filter(call => call.kind === 'find-user').map(call => call.id), ['0380000000'])
+  assert.equal(f.service.bulkSnapshot().failed, 1)
+  assert.equal(f.service.bulkSnapshot().sent, 1)
 })
 test('activity log retains only the latest 100 entries', () => {
   const store = new AutomationStore()
