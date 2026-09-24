@@ -105,6 +105,41 @@ export class ZaloMessagingConnection implements MessagingConnection {
     }
     return results
   }
+  async automationFindUser(phone: string) {
+    this.requireAutomationConnection()
+    if (!/^0\d{9}$/.test(phone)) throw new ChatError('Số điện thoại không hợp lệ.')
+    try {
+      const user = await this.api.findUser(phone)
+      if (!user.uid || !/^\d{1,30}$/.test(user.uid) || user.uid === this.ownId || user.uid === this.myDocumentsId) throw new Error('Not found')
+      const name = user.display_name || user.zalo_name || `Zalo ${user.uid}`
+      const avatar = user.avatar || ''
+      const key = keyOf('personal', user.uid)
+      if (!this.disposed) this.setThread(key, { id: user.uid, type: 'personal', name, avatar, lastMessage: this.threads.get(key)?.lastMessage || '', updatedAt: this.threads.get(key)?.updatedAt || 0 })
+      return { id: user.uid, name, avatar }
+    } catch (cause) {
+      if (cause instanceof ChatError) throw cause
+      throw new ChatError('Không tìm thấy người dùng hoặc Zalo không cho phép tìm bằng số này.', 404)
+    }
+  }
+  async automationSendMessage(contactId: string, text: string) {
+    this.requireAutomationConnection(contactId)
+    if (typeof text !== 'string' || !text.trim() || text.length > MAX_MESSAGE_LENGTH) throw new ChatError('Nội dung tin nhắn không hợp lệ.')
+    try {
+      const response = await this.api.sendMessage({ msg: text }, contactId, ThreadType.User)
+      if (!response.message && response.attachment.length === 0) throw new Error('No acknowledgement')
+      if (!this.disposed && response.message) {
+        const conversation = this.threads.get(keyOf('personal', contactId))
+        this.remember({
+          id: String(response.message.msgId), threadId: contactId, type: 'personal', senderId: this.ownId,
+          senderName: this.ownName, self: true, text, timestamp: Date.now(), attachments: [],
+        })
+        if (conversation) this.setThread(keyOf('personal', contactId), { ...conversation, lastMessage: text, updatedAt: Date.now() })
+      }
+    } catch (cause) {
+      if (cause instanceof ChatError) throw cause
+      throw new ChatError('Zalo chưa xác nhận gửi tin nhắn cho số này.', 502)
+    }
+  }
   openPersonal(contactId: string, name: string) {
     this.requireAutomationConnection(contactId)
     const key = keyOf('personal', contactId)

@@ -6,7 +6,7 @@ export function cameraQuestion(text: string) {
   return !/khong (?:can|lay|dung)|huy|khong dang k/.test(value) && /\bcam\b|camera|co tang gi|tang gi khong|qua tang/.test(value)
 }
 export function cameraAdvice(plan: string | undefined, region: Region, knowledge: Knowledge, now: number, paymentMonths?: number) {
-  const prefix = 'Dạ đóng tối thiểu 6 tháng cước thì mình được tặng camera ngoài trời cố định, không xoay được ạ.'
+  const prefix = 'Dạ đóng tối thiểu 6 tháng cước thì mình được tặng camera free lắp đặt.'
   const fee = cameraFees[(plan ?? '').toUpperCase()]
   if (!fee) return { reply: `${prefix} Phí camera cộng vào cước là 10k/tháng với NETVT1, MESHVT1; 20k/tháng với NETVT2, MESHVT2, MESHVT3. Mình đang chọn gói nào ạ?`, reason: 'camera-needs-plan' }
   const feeText = `Phí camera là ${fee / 1000}k/tháng, cộng vào cước Internet ạ.`

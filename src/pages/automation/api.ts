@@ -1,4 +1,4 @@
-import type { AutomationLogs, AutomationSnapshot, GroupMember, Lead, LeadStage } from '../../../shared/automation'
+import type { AutomationLogs, AutomationSnapshot, BulkMessageSnapshot, GroupMember, Lead, LeadStage } from '../../../shared/automation'
 import type { Conversation } from '../../../shared/messages'
 import { apiUrl } from '../../api-url'
 async function request<T>(path: string, signal?: AbortSignal, data?: unknown): Promise<T> {
@@ -15,6 +15,10 @@ export const automationApi = {
   members: (accountId: string, groupId: string, signal: AbortSignal) => request<{ members: GroupMember[] }>(`/api/automation/choices?${new URLSearchParams({ accountId, groupId })}`, signal),
   configure: (accountId: string, groupId: string, senderId: string, targetGroupId: string, id: string | null = null) => request<AutomationSnapshot>('/api/automation/rule', undefined, { accountId, groupId, senderId, targetGroupId, id }),
   toggle: (enabled: boolean, id: string) => request<AutomationSnapshot>('/api/automation/enabled', undefined, { enabled, id }),
+  bulkState: (signal: AbortSignal) => request<BulkMessageSnapshot>('/api/automation/bulk', signal),
+  bulkCreate: (data: { accountId: string; phones: string; message: string; startTime: string; endTime: string; delaySeconds: number }) => request<BulkMessageSnapshot>('/api/automation/bulk/create', undefined, data),
+  bulkStart: (id: string) => request<BulkMessageSnapshot>('/api/automation/bulk/start', undefined, { id }),
+  bulkStop: (id?: string) => request<BulkMessageSnapshot>('/api/automation/bulk/stop', undefined, id ? { id } : {}),
   leads: (search: string, stage: string, page: number, signal: AbortSignal) => request<{ leads: Lead[]; total: number; page: number }>(`/api/leads?${new URLSearchParams({ search, stage, page: String(page) })}`, signal),
   editLead: (lead: Lead, fields: { name: string; phone: string; address: string; plan: string; stage: LeadStage }) => request<Lead>(`/api/leads/${encodeURIComponent(lead.id)}`, undefined, { ...fields, updatedAt: lead.updatedAt }),
 }

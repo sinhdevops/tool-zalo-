@@ -21,3 +21,44 @@ export interface IncomingMessage { message: ChatMessage; clientId: string }
 export interface GroupMember { id: string; name: string }
 export interface AutomationSnapshot { rules?: (AutomationRule & { connection: string })[]; rule: AutomationRule | null; connection: string; error: string; total: number; sent: number; waiting: number }
 export const leadStatusLabels: Record<LeadStatus, string> = { waiting: 'Chờ xử lý', queued: 'Chờ chuyển tiếp', friend: 'Dữ liệu cũ', sending: 'Đang chuyển tiếp', sent: 'Đã chuyển tiếp', review: 'Cần kiểm tra' }
+
+export type BulkMessageItemStatus = 'pending' | 'searching' | 'sending' | 'sent' | 'error'
+export interface BulkMessageItem {
+  id: string
+  phone: string
+  status: BulkMessageItemStatus
+  detail: string
+  name?: string
+  sentAt?: number
+}
+export interface BulkMessageSettings {
+  accountId: string
+  message: string
+  startTime: string
+  endTime: string
+  delaySeconds: number
+  pauseEvery: number
+  pauseSeconds: number
+}
+export type BulkMessageCampaignState = 'ready' | 'running' | 'stopped' | 'completed'
+export interface BulkMessageCampaign {
+  id: string
+  createdAt: number
+  updatedAt: number
+  state: BulkMessageCampaignState
+  settings: BulkMessageSettings
+  items: BulkMessageItem[]
+}
+export interface BulkMessageSnapshot {
+  activeCampaignId?: string
+  running: boolean
+  pausedReason: string
+  settings: BulkMessageSettings | null
+  items: BulkMessageItem[]
+  campaigns: BulkMessageCampaign[]
+  total: number
+  pending: number
+  sent: number
+  failed: number
+  nextActionAt?: number
+}

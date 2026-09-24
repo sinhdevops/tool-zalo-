@@ -1,0 +1,15 @@
+.advisor-test { max-width: 1150px; margin: 0 auto; padding: 24px; color: #243b53; }
+.advisor-test header { display: flex; justify-content: space-between; align-items: center; gap: 16px; margin-top: 18px; }
+.advisor-test h1 { margin: 0; font-size: 26px; }.advisor-test h2 { font-size: 16px; }
+.advisor-test p { line-height: 1.6; }.advisor-test-note { padding: 12px; background: #edf4ff; border-radius: 10px; font-size: 13px; }
+.advisor-test-layout { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 20px; }
+.advisor-test-chat, .advisor-test aside { background: white; border: 1px solid #dbe4ef; border-radius: 14px; padding: 18px; min-width: 0; }
+.advisor-test-messages { height: 420px; overflow: auto; display: flex; flex-direction: column; gap: 12px; }
+.advisor-test-messages article { padding: 12px 16px; border-radius: 12px; max-width: 90%; background: #f1f5f9; align-self: flex-start; flex-shrink: 0; overflow-wrap: anywhere; }
+.advisor-test-messages article.customer { background: #eaf1ff; align-self: flex-end; }.advisor-test-messages article p { margin: 6px 0 0; white-space: pre-wrap; }.advisor-test-messages strong { font-size: 12px; }
+.advisor-test label { display: block; font-size: 13px; margin: 14px 0 6px; }
+.advisor-test input, .advisor-test select, .advisor-test textarea { box-sizing: border-box; width: 100%; margin-top: 6px; padding: 10px; border: 1px solid #cbd5e1; border-radius: 8px; font: inherit; }
+.advisor-test textarea { min-height: 85px; resize: vertical; }.advisor-test form > div { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 10px; }
+.advisor-test button { background: #2563eb; color: white; border: 0; border-radius: 8px; padding: 11px 16px; cursor: pointer; }.advisor-test button:disabled { opacity: .5; cursor: default; }
+.advisor-test-result { border-top: 1px solid #dbe4ef; margin-top: 20px; font-size: 13px; overflow-wrap: anywhere; }.advisor-test-result img { width: 100%; }.advisor-test-error { color: #b91c1c; }
+@media(max-width: 800px) { .advisor-test-layout { grid-template-columns: 1fr; }.advisor-test header { flex-wrap: wrap; }.advisor-test { padding: 12px; } }

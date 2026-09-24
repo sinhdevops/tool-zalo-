@@ -1,11 +1,13 @@
 import { createHash } from 'node:crypto'
 import { classifyAddress, normalize } from './regions.ts'
-import { selectPriceSheet } from './price-sheets.ts'
-import { readHomeNeeds, recommendPlan } from './recommendation.ts'
+import { contextualHomeAnswer, readHomeNeeds, recommendPlan } from './recommendation.ts'
 import { adviseTv } from './tv.ts'
 import { adviseBilling } from './billing.ts'
 import { closingChecklist } from './closing.ts'
 import { cameraAdvice, cameraQuestion } from './camera.ts'
+import { installationAdvice, installationPolicy } from './installation.ts'
+import { openingSequence } from './opening.ts'
+import { adviseConversationContext } from './conversation-context.ts'
 import type { AdvisorInput, Draft, Intent, Knowledge } from './types.ts'
 
 const patterns: [Intent, RegExp][] = [
@@ -16,7 +18,7 @@ const patterns: [Intent, RegExp][] = [
   ['price', /bao nhieu|gia|tien cuoc|cuoc phi|\d+\s*k\b/], ['fee', /phi lap|phi hoa mang|phat sinh|chi phi/],
   ['promotion', /khuyen mai|uu dai|tang thang|6 thang|12 thang|1 nam|sinh vien/],
   ['schedule', /khi nao|bao gio|may gio|hom nay|ngay mai|hen lap|lich lap|qua lap/],
-  ['signup', /dang ky|dang ki|chot|lay goi|lap giup|lap cho/],
+  ['signup', /dang ky|dang ki|chot|lay goi|lap giup|lap cho|lap o|lap mang|lap wifi/],
   ['recommend', /tu van|goi nao|phu hop|tang|lau|nha cap 4|phong tro|o tro|mang manh|mang nhanh|toc do cao|wifi|camera|truyen hinh/],
   ['greeting', /^(alo|chao|hello|hi|anh oi|chi oi|em oi)$/],
 ]
@@ -29,12 +31,22 @@ export function draftAdvice(input: AdvisorInput, knowledge: Knowledge, now = Dat
   const lastReply = messages.findLastIndex(m => m.role !== 'customer')
   const pending = messages.slice(lastReply + 1).filter(m => m.role === 'customer')
   const facts = { ...input.facts }
-  facts.home = readHomeNeeds(messages.filter(m => m.role === 'customer').map(m => m.text), facts.home)
+  let previousQuestion = ''
+  let suppliedHomeAnswer = false
+  const homeMessages: string[] = []
+  for (const message of messages) {
+    if (message.role !== 'customer') { previousQuestion = message.text; continue }
+    const resolved = contextualHomeAnswer(message.text, previousQuestion)
+    homeMessages.push(resolved ?? message.text)
+    if (resolved && pending.some(m => m.id === message.id)) suppliedHomeAnswer = true
+  }
+  facts.home = readHomeNeeds(homeMessages, facts.home)
   let suppliedAddress = false
   // Only structured customer address/plan fields update memory; never extract a location from an arbitrary question.
   for (const message of messages.filter(m => m.role === 'customer')) {
     const address = message.text.match(/(?:^|\n)\s*địa chỉ(?: lắp đặt)?\s*:\s*([^\n]+)/iu)?.[1]?.trim()
       ?? message.text.match(/^(?:em|anh|chị|mình|tôi|nhà em|nhà mình)\s+ở\s+([^\n?!]+)$/iu)?.[1]?.trim()
+      ?? normalize(message.text).match(/^(?:(?:em|anh|chi|minh|toi) )?(?:muon |can )?lap(?: mang| wifi| internet)? (?:o|tai) (.+)$/)?.[1]
     if (address) { facts.address = address; if (pending.some(m => m.id === message.id)) suppliedAddress = true }
     const plan = message.text.match(/(?:^|\n)\s*gói(?: cước(?: tư vấn)?)?\s*:\s*(NETVT\d+|MESHVT\d+)\b/iu)?.[1]
     if (plan) facts.plan = plan.toUpperCase()
@@ -50,17 +62,34 @@ export function draftAdvice(input: AdvisorInput, knowledge: Knowledge, now = Dat
   const mentionedPlans = [...new Set(text.match(/\b(?:netvt|meshvt)\d+\b/g) ?? [])]
   if (mentionedPlans.length === 1 && !/khong|ko|\bk\b|huy|dung|so sanh/.test(text)) facts.plan = mentionedPlans[0]!.toUpperCase()
   result.intent = patterns.filter(([, regex]) => regex.test(text)).map(([intent]) => intent)
+  if (suppliedHomeAnswer && !result.intent.includes('recommend')) result.intent.push('recommend')
   // A location-only reply continues the question before the bot asked for an address.
   // Carry only commercial intents, never revive old payments/complaints or old send actions.
   if (!result.intent.length && suppliedAddress) {
     const question = messages.slice(0, lastReply).findLast(m => m.role === 'customer')
     if (question) result.intent = patterns.filter(([intent, regex]) => ['price', 'fee', 'recommend', 'signup'].includes(intent) && regex.test(normalize(question.text))).map(([intent]) => intent)
+    if (!result.intent.length) result.intent = ['recommend']
   }
   if (!result.intent.length) result.intent = ['other']
   const has = (intent: Intent) => result.intent.includes(intent)
   const who = facts.salutation
   if (has('stop')) return finish('handoff', 'customer-opt-out', null)
+  const learnedContext = adviseConversationContext(text, Boolean(facts.address))
+  if (learnedContext) return finish(learnedContext.action, learnedContext.reason, learnedContext.reply, learnedContext.missing ?? [])
   if (has('human') || has('complaint')) return finish('handoff', 'operator-required', `Dạ em chuyển nhân viên hỗ trợ ${who} phần này nhé.`)
+  if (input.outreach) {
+    const opening = openingSequence(input.outreach, region)
+    if (opening) {
+      result.outreachPhase = opening.phase; result.outgoing = opening.outgoing
+      return finish(opening.outgoing.length ? 'draft' : 'wait', opening.phase === 'active' ? 'opening-catalog' : 'opening-wait-for-customer', opening.outgoing.filter(item => item.kind === 'text').map(item => item.text).join('\n') || null)
+    }
+  }
+  const installation = installationAdvice(text, input.closing?.paymentMonths)
+  if (installation && !has('payment') && !has('invoice')) {
+    result.installationFee = { quoted: installation.fee, maximumDiscount: installation.maximumDiscount, minimumFee: installation.minimumFee }
+    const alsoAsksPlanPrice = /gia bao nhieu|gia goi|goi.*bao nhieu|tien cuoc|cuoc phi|bao nhieu.*thang/.test(text)
+    if (installation.reason !== 'installation-standard-fee' || !alsoAsksPlanPrice) return finish(installation.action, installation.reason, installation.reply)
+  }
   if (mentionedPlans.length > 1) return finish('handoff', 'plan-selection-needs-review', null)
   const billingPlan = facts.plan ?? [...messages].reverse().filter(m => m.role === 'customer').map(m => m.text.match(/(?:lấy|chọn|chốt|đăng ký|đăng kí)\s+(?:gói\s+)?((?:NETVT|MESHVT)\d+)\b/iu)?.[1]).find(Boolean)
   const billing = adviseBilling(messages, billingPlan)
@@ -81,6 +110,7 @@ export function draftAdvice(input: AdvisorInput, knowledge: Knowledge, now = Dat
   }
   if (has('payment') || has('invoice')) return finish('handoff', 'payment-or-invoice-needs-record', `Dạ để em kiểm tra thông tin đơn của mình rồi phản hồi ${who} nhé.`)
   if (has('schedule')) return finish('handoff', 'installation-needs-confirmation', `Dạ để em kiểm tra lịch kỹ thuật trước rồi xác nhận lại với ${who} nhé.`)
+  if (/lap(?: dat| mang| wifi)? (?:co )?(?:nhanh|lau|mat bao lau|bao lau|mat may phut|mat bao nhieu phut)/.test(text)) return finish('draft', 'installation-duration', 'Lắp đặt thì tầm 30 phút thôi ạ.')
   const tv = adviseTv(messages, facts.service)
   if (tv) {
     result.tvAddon = tv.addon
@@ -107,13 +137,10 @@ export function draftAdvice(input: AdvisorInput, knowledge: Knowledge, now = Dat
     const offer = offers[0]!
     result.offerId = offer.id
     if (/camera/.test(text) || (/truyen hinh|tivi|\btv\b/.test(text) && facts.service !== 'internet-tv')) return finish('handoff', 'bundle-not-configured', `Dạ em kiểm tra giá gói kèm dịch vụ mình cần nhé.`, ['bundle-offer'])
-    const sheet = selectPriceSheet(region, facts.service)
-    // Do not attach a stale sheet that contradicts the approved quote.
-    if (sheet && Object.entries(sheet.prices).some(([plan, price]) => normalize(plan) === normalize(offer.plan) && price === offer.monthlyPrice)) result.priceSheet = { id: sheet.id, path: sheet.path, service: sheet.service }
     const parts: string[] = []
     if (!facts.plan && result.recommendation.reason === 'one-device-per-floor') parts.push(`Nhà mình ${facts.home.floors} tầng thì em tư vấn mỗi tầng một thiết bị Wi-Fi nhé.`)
     if (has('price') || has('recommend') || has('signup')) parts.push(`Dạ gói ${offer.plan}${offer.service === 'internet-tv' ? ' kèm truyền hình' : ''} của mình là ${money(offer.monthlyPrice)}/tháng, có ${offer.devices} thiết bị phát Wi-Fi ạ.`)
-    if (has('fee')) parts.push(`Phí hòa mạng là ${money(offer.installationFee)} ạ.`)
+    if (has('fee')) parts.push(`Phí hòa mạng là ${money(installationPolicy.standardFee)} ạ.`)
     if (has('signup')) parts.push('Mình muốn đăng ký gói này đúng không ạ? Em chuyển thông tin để nhân viên kiểm tra lắp đặt nhé.')
     return finish('draft', 'approved-offer', parts.join('\n'))
   }

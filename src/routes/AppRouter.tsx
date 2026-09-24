@@ -6,6 +6,8 @@ import { appRoutes } from './config'
 import { routePaths } from './paths'
 
 const GroupLeadPage = lazy(() => import('../pages/automation/GroupLeadPage'))
+const AdvisorTestPage = lazy(() => import('../pages/automation/AdvisorTestPage'))
+const BulkMessagePage = lazy(() => import('../pages/automation/BulkMessagePage'))
 
 export default function AppRouter() {
   return (
@@ -24,6 +26,8 @@ export default function AppRouter() {
             <GroupLeadPage />
           </Suspense>
         } />
+        <Route path="/automation/advisor-test" element={<Suspense fallback={<p>Đang tải…</p>}><AdvisorTestPage /></Suspense>} />
+        <Route path="/automation/bulk-message" element={<Suspense fallback={<p className="route-loading" role="status">Đang tải trang…</p>}><BulkMessagePage /></Suspense>} />
         <Route path="*" element={<NotFoundPage />} />
       </Route>
     </Routes>

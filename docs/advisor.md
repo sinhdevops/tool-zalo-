@@ -43,3 +43,11 @@ Kiểm thử: `node --test tests/server/advisor.test.ts`; toàn bộ dự án: `
 Nhà cấp 4/phòng trọ/1 tầng: NETVT1; yêu cầu mạng mạnh: NETVT2. Nhà 2/3/4 tầng lần lượt MESHVT1/MESHVT2/MESHVT3 với tổng 2/3/4 điểm phát, tính cả modem chính. Mỗi tầng một thiết bị theo cách tư vấn của người dùng, không phải cam kết phủ sóng trong mọi công trình. Không dùng diện tích để tự nâng gói. Trên 4 tầng cần người vận hành kiểm tra thiết bị bổ sung; gác/lửng/tum hoặc chưa rõ số tầng thì hỏi lại. Một trệt hai lầu là tổng 3 tầng.
 
 `recommendation` là đề xuất độc lập, không ghi thành `facts.plan` mà khách đã chọn. Bảng giá vẫn được kiểm tra theo vùng, dịch vụ và hiệu lực. Quy tắc này được ưu tiên hơn nội dung tư vấn tham khảo trong tài liệu đính kèm.
+
+## Phí hòa mạng — người vận hành xác nhận 22/09/2026
+
+Mặc định 300.000đ, không tự miễn/giảm khi đóng trước. Khách khó chốt yêu cầu giảm có thể được xét ngoại lệ tối đa 100.000đ, còn ít nhất 200.000đ, chỉ khi kỳ đóng tối thiểu 6 tháng. Bot không tự hứa mức giảm tối đa; trường hợp đòi giảm và đủ kỳ đóng được chuyển nhân viên cân nhắc. Đóng từng tháng không được giảm. Khi chưa rõ kỳ đóng thì hỏi lại. Quy tắc hiện hành ghi đè phí cũ trong offer khi soạn câu báo phí.
+
+## Mở đầu hội thoại
+
+Màn hình test gửi `outreach.phase` (new/waiting/active) và event (setup/reply/heart/friend-accepted). New chỉ trả 2 tin chào. Waiting + setup không gửi thêm; phản hồi của khách chuyển sang 5 mục: 2 ảnh theo vùng rồi 3 tin nguyên văn đã cấu hình. Active không lặp bộ mở đầu. Nút thả tim/kết bạn trên màn hình là giả lập. Trạng thái đang lưu trong bộ nhớ trang; tải lại bắt đầu cuộc test mới. Chưa nối sự kiện Zalo thật và chưa có sổ gửi bền vững; cần hoàn thiện trước khi bật gửi tự động.

@@ -15,7 +15,7 @@ export default function AppLayout() {
   const menuOpen = menuPath === pathname
   const normalizedPath = pathname.replace(/\/$/, '')
   const currentRoute = appRoutes.find((route) => route.path === normalizedPath)
-  const title = normalizedPath === '/automation/group-lead' ? 'Trực nhóm — nhận lead' : currentRoute?.title ?? 'Không tìm thấy trang'
+  const title = normalizedPath === '/automation/advisor-test' ? 'Test tư vấn' : normalizedPath === '/automation/group-lead' ? 'Trực nhóm — nhận lead' : currentRoute?.title ?? 'Không tìm thấy trang'
 
   useEffect(() => {
     try { localStorage.setItem('zalo-tool:sidebar-collapsed', String(collapsed)) }

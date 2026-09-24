@@ -1,6 +1,6 @@
 import { DatabaseSync } from 'node:sqlite'
 import { randomUUID } from 'node:crypto'
-import type { AutomationRule, Lead, AutomationLog, LeadStage } from '../../shared/automation.ts'
+import type { AutomationRule, BulkMessageCampaign, Lead, AutomationLog, LeadStage } from '../../shared/automation.ts'
 
 export interface Job {
   id: string; revision: string; accountId: string; kind: 'forward'; leadIds: string[]
@@ -18,6 +18,7 @@ export class AutomationStore {
       CREATE TABLE IF NOT EXISTS leads(id TEXT PRIMARY KEY, scope TEXT NOT NULL, phone TEXT NOT NULL, body TEXT NOT NULL, UNIQUE(scope,phone));
       CREATE TABLE IF NOT EXISTS automation_cards(id INTEGER PRIMARY KEY, body TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS automation_jobs(id TEXT PRIMARY KEY, state TEXT NOT NULL, body TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS bulk_message_campaigns(id TEXT PRIMARY KEY, updatedAt INTEGER NOT NULL, body TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS automation_logs(id INTEGER PRIMARY KEY, at INTEGER NOT NULL, text TEXT NOT NULL, leadId TEXT);`)
     this.pruneLogs()
     // Never execute jobs created by the removed friend/private-message workflow.
@@ -76,6 +77,16 @@ export class AutomationStore {
   saveJob(job: Job) { this.db.prepare('INSERT INTO automation_jobs VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET state=excluded.state,body=excluded.body').run(job.id, job.state, JSON.stringify(job)) }
   jobs(state: Job['state']): Job[] { return this.db.prepare('SELECT body FROM automation_jobs WHERE state=? ORDER BY rowid').all(state).map((r) => JSON.parse(String(r.body))) }
   newJob(input: Omit<Job, 'id' | 'state'>) { this.saveJob({ ...input, id: randomUUID(), state: 'pending' }) }
+  bulkCampaigns(): BulkMessageCampaign[] {
+    return this.db.prepare('SELECT body FROM bulk_message_campaigns ORDER BY updatedAt DESC').all().map(row => JSON.parse(String(row.body)) as BulkMessageCampaign)
+  }
+  bulkCampaign(id: string): BulkMessageCampaign | undefined {
+    const row = this.db.prepare('SELECT body FROM bulk_message_campaigns WHERE id=?').get(id)
+    return row ? JSON.parse(String(row.body)) as BulkMessageCampaign : undefined
+  }
+  saveBulkCampaign(campaign: BulkMessageCampaign) {
+    this.db.prepare('INSERT INTO bulk_message_campaigns VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET updatedAt=excluded.updatedAt,body=excluded.body').run(campaign.id, campaign.updatedAt, JSON.stringify(campaign))
+  }
   log(text: string, leadId?: string) {
     this.db.prepare('INSERT INTO automation_logs(at,text,leadId) VALUES(?,?,?)').run(Date.now(), text, leadId ?? null)
     this.pruneLogs()

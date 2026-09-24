@@ -1,6 +1,18 @@
 import { normalize } from './regions.ts'
 export interface HomeNeeds { floors?: number; homeType?: 'single-storey' | 'room' | 'multi-storey'; strongNetwork?: boolean; unclearFloors?: boolean }
 export interface Recommendation { plan?: string; devices?: number; reason: string }
+/** Resolve abbreviated answers only against the immediately preceding advisor question. */
+export function contextualHomeAnswer(answer: string, question: string): string | undefined {
+  const prompt = normalize(question)
+  if (!/nha/.test(prompt) || !/hay|may tang|bao nhieu tang/.test(prompt) || /tivi|smart|truyen hinh/.test(prompt)) return undefined
+  const text = normalize(answer).replace(/^(?:da |vang )/, '').replace(/(?: thoi)?(?: a| nhe| nha)?$/, '').trim()
+  if (/^(?:nha )?(?:thong thuong|binh thuong|thuong)$/.test(text)) return 'nhà cấp 4'
+  if (/^(?:nha )?cap 4$/.test(text)) return 'nhà cấp 4'
+  if (/^(?:phong )?tro$/.test(text)) return 'phòng trọ'
+  if (/^(?:nha )?(?:tang|nhieu tang)$/.test(text)) return 'nhà tầng'
+  if (/^(?:\d+|mot|hai|ba|bon|nam)(?: tang| lau)?$/.test(text)) return /tang|lau/.test(text) ? text : `${text} tầng`
+  return undefined
+}
 export function readHomeNeeds(messages: string[], initial: HomeNeeds = {}): HomeNeeds {
   const needs = { ...initial }
   for (const message of messages) {

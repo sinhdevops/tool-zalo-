@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import type { AccountService } from '../accounts/service.ts'
 import type { MessagingConnection } from '../messages/types.ts'
 import { ChatError } from '../messages/types.ts'
-import type { AutomationRule, IncomingMessage, Lead } from '../../shared/automation.ts'
+import type { AutomationRule, BulkMessageCampaign, BulkMessageItem, BulkMessageSettings, BulkMessageSnapshot, IncomingMessage, Lead } from '../../shared/automation.ts'
 import { AutomationStore } from './store.ts'
 import type { Job } from './store.ts'
 import { phones, orderFields } from './parse.ts'
@@ -19,6 +19,14 @@ export class AutomationService {
   private lastReconnect = new Map<string, number>()
   private backfilledRevisions = new Map<string, string>()
   private settleMs?: number
+  private bulkSettings: BulkMessageSettings | null = null
+  private bulkItems: BulkMessageItem[] = []
+  private bulkCampaignId?: string
+  private bulkRunning = false
+  private bulkBusy = false
+  private bulkNextActionAt = 0
+  private bulkSuccessCount = 0
+  private bulkPausedReason = ''
   constructor(accounts: Pick<AccountService, 'getMessaging'>, store: AutomationStore, settleMs?: number) { this.accounts = accounts; this.store = store; this.settleMs = settleMs }
   start() { this.timer = setInterval(() => { void this.tick() }, 1500); this.timer.unref(); void this.tick() }
   snapshot() { const rules = this.store.rules().map(rule => ({ ...rule, connection: this.bindings.get(rule.accountId)?.chat.status() ?? 'disconnected' })); return { rules, rule: this.store.rule(), connection: rules.some(rule => rule.enabled && rule.connection === 'connected') ? 'connected' : 'disconnected', error: this.fault, ...this.store.stats() } }
@@ -146,7 +154,7 @@ export class AutomationService {
           else if (chat.status() === 'disconnected' && Date.now() - (this.lastReconnect.get(accountId) ?? 0) > 30_000) { this.lastReconnect.set(accountId, Date.now()); chat.reconnect() }
         } catch { this.bindings.get(accountId)?.unsubscribe(); this.bindings.delete(accountId) }
       }
-      if (!this.closed && !this.busy) {
+      if (!this.closed && !this.busy && !this.bulkBusy) {
         for (const job of this.store.jobs('pending')) {
           if (!this.active(job)) { this.cancel(job); continue }
           const chat = this.bindings.get(job.accountId)?.chat
@@ -156,6 +164,7 @@ export class AutomationService {
         }
       }
     } finally { this.connecting = false }
+    if (!this.closed && !this.busy) await this.tickBulk()
   }
   private active(job: Job) { return !this.closed && !this.fault && this.store.rules().some(rule => rule.enabled && rule.revision === job.revision && rule.accountId === job.accountId) }
   private async run(job: Job, chat: MessagingConnection) {
@@ -191,6 +200,164 @@ export class AutomationService {
         for (const leadId of job.leadIds) { const lead = this.store.lead(leadId); if (lead) this.store.saveLead({ ...lead, status: 'review', detail }) }
         this.store.log(`Thả tim hoặc gửi sang nhóm chưa hoàn tất: ${detail}`)
       } catch { this.fault = 'Không lưu được kết quả. Đã ngừng tự động hóa để tránh gửi lặp.' }
+    }
+  }
+
+  bulkSnapshot(): BulkMessageSnapshot {
+    const pending = this.bulkItems.filter(item => ['pending', 'searching', 'sending'].includes(item.status)).length
+    const sent = this.bulkItems.filter(item => item.status === 'sent').length
+    const failed = this.bulkItems.filter(item => item.status === 'error').length
+    return {
+      ...(this.bulkCampaignId ? { activeCampaignId: this.bulkCampaignId } : {}),
+      running: this.bulkRunning,
+      pausedReason: this.bulkPausedReason,
+      settings: this.bulkSettings,
+      items: this.bulkItems,
+      campaigns: this.store.bulkCampaigns(),
+      total: this.bulkItems.length,
+      pending,
+      sent,
+      failed,
+      ...(this.bulkNextActionAt > Date.now() ? { nextActionAt: this.bulkNextActionAt } : {}),
+    }
+  }
+
+  private validateBulk(settings: BulkMessageSettings, phoneList: string[]) {
+    if (!settings.accountId || !settings.message.trim() || settings.message.length > 2000) throw new ChatError('Chọn tài khoản và nhập nội dung tin nhắn từ 1 đến 2000 ký tự.')
+    if (!/^\d{2}:\d{2}$/.test(settings.startTime) || !/^\d{2}:\d{2}$/.test(settings.endTime)) throw new ChatError('Khung giờ chạy không hợp lệ.')
+    const start = this.timeMinutes(settings.startTime), end = this.timeMinutes(settings.endTime)
+    if (start === null || end === null || start >= end) throw new ChatError('Giờ bắt đầu phải sớm hơn giờ kết thúc trong cùng một ngày.')
+    if (!Number.isInteger(settings.delaySeconds) || settings.delaySeconds < 5 || settings.delaySeconds > 3600) throw new ChatError('Delay giữa các lượt phải từ 5 đến 3600 giây.')
+    if (settings.pauseEvery !== 2 || settings.pauseSeconds !== 60) throw new ChatError('Cấu hình nghỉ hiện tại là sau 2 lượt gửi thành công, nghỉ 60 giây.')
+    const normalized = [...new Set(phoneList.flatMap(value => phones(value)))]
+    if (!normalized.length) throw new ChatError('Chưa có số điện thoại Việt Nam hợp lệ.')
+    if (normalized.length > 1000) throw new ChatError('Mỗi lượt hỗ trợ tối đa 1000 số điện thoại.')
+    this.accounts.getMessaging(settings.accountId)
+    return { settings: { ...settings, message: settings.message.trim() }, normalized }
+  }
+
+  createBulk(settings: BulkMessageSettings, phoneList: string[]) {
+    const validated = this.validateBulk(settings, phoneList)
+    const now = Date.now()
+    const campaign: BulkMessageCampaign = {
+      id: randomUUID(),
+      createdAt: now,
+      updatedAt: now,
+      state: 'ready',
+      settings: validated.settings,
+      items: validated.normalized.map(phone => ({ id: randomUUID(), phone, status: 'pending', detail: 'Chờ bấm Chạy.' })),
+    }
+    this.store.saveBulkCampaign(campaign)
+    return this.bulkSnapshot()
+  }
+
+  startBulk(id: string) {
+    if (this.bulkRunning || this.bulkBusy) throw new ChatError('Một chiến dịch đang chạy. Hãy dừng chiến dịch hiện tại trước.', 409)
+    const campaign = this.store.bulkCampaign(id)
+    if (!campaign) throw new ChatError('Không tìm thấy cấu hình gửi tin.', 404)
+    if (!campaign.items.some(item => item.status === 'pending')) throw new ChatError('Cấu hình này không còn số nào đang chờ gửi.', 409)
+    this.accounts.getMessaging(campaign.settings.accountId)
+    this.bulkCampaignId = campaign.id
+    this.bulkSettings = campaign.settings
+    this.bulkItems = campaign.items
+    this.bulkRunning = true
+    this.bulkBusy = false
+    this.bulkNextActionAt = 0
+    this.bulkSuccessCount = 0
+    this.bulkPausedReason = ''
+    this.saveActiveBulk('running')
+    void this.tick()
+    return this.bulkSnapshot()
+  }
+
+  stopBulk(id?: string) {
+    if (id && this.bulkCampaignId && id !== this.bulkCampaignId) throw new ChatError('Chiến dịch này không phải chiến dịch đang chạy.', 409)
+    this.bulkRunning = false
+    this.bulkPausedReason = 'Đã dừng thủ công.'
+    this.saveActiveBulk('stopped')
+    return this.bulkSnapshot()
+  }
+
+  private saveActiveBulk(state: BulkMessageCampaign['state']) {
+    if (!this.bulkCampaignId || !this.bulkSettings) return
+    const previous = this.store.bulkCampaign(this.bulkCampaignId)
+    this.store.saveBulkCampaign({
+      id: this.bulkCampaignId,
+      createdAt: previous?.createdAt ?? Date.now(),
+      updatedAt: Date.now(),
+      state,
+      settings: this.bulkSettings,
+      items: this.bulkItems,
+    })
+  }
+
+  private timeMinutes(value: string) {
+    const match = /^(\d{2}):(\d{2})$/.exec(value)
+    if (!match) return null
+    const hour = Number(match[1]), minute = Number(match[2])
+    if (hour > 23 || minute > 59) return null
+    return hour * 60 + minute
+  }
+
+  private withinBulkWindow(settings: BulkMessageSettings, now = new Date()) {
+    const start = this.timeMinutes(settings.startTime) ?? 0
+    const end = this.timeMinutes(settings.endTime) ?? 0
+    const current = now.getHours() * 60 + now.getMinutes()
+    return current >= start && current < end
+  }
+
+  private updateBulkItem(id: string, update: Partial<BulkMessageItem>) {
+    this.bulkItems = this.bulkItems.map(item => item.id === id ? { ...item, ...update } : item)
+    this.saveActiveBulk(this.bulkRunning ? 'running' : 'stopped')
+  }
+
+  private async tickBulk() {
+    if (!this.bulkRunning || this.bulkBusy || this.busy || !this.bulkSettings) return
+    const next = this.bulkItems.find(item => item.status === 'pending')
+    if (!next) {
+      this.bulkRunning = false
+      this.bulkPausedReason = 'Đã xử lý xong danh sách.'
+      this.saveActiveBulk('completed')
+      return
+    }
+    if (!this.withinBulkWindow(this.bulkSettings)) {
+      this.bulkPausedReason = `Ngoài khung giờ ${this.bulkSettings.startTime}–${this.bulkSettings.endTime}.`
+      return
+    }
+    if (Date.now() < this.bulkNextActionAt) {
+      this.bulkPausedReason = 'Đang chờ theo giới hạn tốc độ.'
+      return
+    }
+    this.bulkPausedReason = ''
+    const chat = this.accounts.getMessaging(this.bulkSettings.accountId)
+    if (chat.status() !== 'connected') {
+      if (chat.status() === 'disconnected') chat.reconnect()
+      this.bulkPausedReason = 'Đang chờ tài khoản Zalo kết nối.'
+      return
+    }
+    this.bulkBusy = true
+    this.updateBulkItem(next.id, { status: 'searching', detail: 'Đang tìm tài khoản Zalo theo số điện thoại.' })
+    try {
+      const user = await chat.automationFindUser(next.phone)
+      this.updateBulkItem(next.id, { status: 'sending', detail: `Đã tìm thấy ${user.name || 'tài khoản Zalo'}, đang gửi tin.`, name: user.name })
+      await chat.automationSendMessage(user.id, this.bulkSettings.message)
+      const sentAt = Date.now()
+      this.updateBulkItem(next.id, { status: 'sent', detail: 'Zalo đã xác nhận gửi tin nhắn.', name: user.name, sentAt })
+      this.bulkSuccessCount += 1
+      if (this.bulkSuccessCount >= this.bulkSettings.pauseEvery) {
+        this.bulkSuccessCount = 0
+        this.bulkNextActionAt = sentAt + this.bulkSettings.pauseSeconds * 1000
+        this.bulkPausedReason = `Đã gửi ${this.bulkSettings.pauseEvery} lượt liên tiếp. Nghỉ ${this.bulkSettings.pauseSeconds} giây.`
+      } else {
+        this.bulkNextActionAt = sentAt + this.bulkSettings.delaySeconds * 1000
+      }
+    } catch (cause) {
+      const detail = cause instanceof Error ? cause.message : 'Không xử lý được số điện thoại này.'
+      this.updateBulkItem(next.id, { status: 'error', detail })
+      this.bulkSuccessCount = 0
+      this.bulkNextActionAt = Date.now() + this.bulkSettings.delaySeconds * 1000
+    } finally {
+      this.bulkBusy = false
     }
   }
   async close() {

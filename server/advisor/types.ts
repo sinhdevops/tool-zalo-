@@ -16,6 +16,7 @@ export const advisorInputSchema = z.object({
   // Explicit facts supplied by the application, never inferred from a customer's instructions.
   facts: z.object({ address: z.string().max(500).optional(), plan: z.string().max(40).optional(), home: z.object({ floors: z.number().int().min(1).max(100).optional(), homeType: z.enum(['single-storey', 'room', 'multi-storey']).optional(), strongNetwork: z.boolean().optional(), unclearFloors: z.boolean().optional() }).optional(), service: z.enum(['internet', 'internet-tv']).optional(), salutation: z.enum(['anh', 'chị', 'anh/chị']).default('anh/chị') }).default({ salutation: 'anh/chị' }),
   paused: z.boolean().default(false),
+  outreach: z.object({ phase: z.enum(['new', 'waiting', 'active']), event: z.enum(['setup', 'reply', 'heart', 'friend-accepted']) }).optional(),
   closing: closingSchema.optional(),
   handledMessageIds: z.array(z.string().max(100)).max(100).default([]),
 }).strict()
@@ -23,7 +24,7 @@ export type AdvisorInput = z.infer<typeof advisorInputSchema>
 export const knowledgeSchema = z.object({
   version: z.string().min(1),
   regionRulesApproved: z.boolean().default(false),
-  confirmedOuterProvinces: z.array(z.string().min(2)).default(['Thừa Thiên Huế', 'Huế']),
+  confirmedOuterProvinces: z.array(z.string().min(2)).default(['Thừa Thiên Huế', 'Huế', 'Đà Nẵng']),
   offers: z.array(z.object({
     id: z.string().min(1), plan: z.string().min(1), region: z.enum(['inner', 'outer']), service: z.enum(['internet', 'internet-tv']).default('internet'),
     monthlyPrice: z.number().int().positive(), installationFee: z.number().int().nonnegative(),
@@ -39,9 +40,13 @@ export interface Draft {
   intent: Intent[]; missing: string[]; reasons: string[]; sourceMessageIds: string[];
   knowledgeVersion: string; region: Region; facts: AdvisorInput['facts']; offerId?: string;
   priceSheet?: { id: string; path: string; service: 'internet' | 'internet-tv' };
+  priceSheets?: { id: string; path: string; service: 'internet' | 'internet-tv' }[];
   recommendation?: { plan?: string; devices?: number; reason: string };
   tvAddon?: { kind: 'box' | 'app'; monthlyPrice: number; maxDevices?: number };
   billingTerm?: { paidMonths: number; bonusMonths: number };
+  installationFee?: { quoted: number; maximumDiscount?: number; minimumFee?: number };
   cameraAddon?: { monthlyFee: number; minimumMonths: number; baseMonthlyPrice?: number; totalMonthlyPrice?: number };
   closingChecklist?: { complete: boolean; missing: string[]; nextQuestion: string | null };
+  outreachPhase?: 'waiting' | 'active';
+  outgoing?: ({ kind: 'text'; text: string } | { kind: 'image'; path: string; label: string })[];
 }

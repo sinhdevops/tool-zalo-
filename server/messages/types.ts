@@ -7,6 +7,8 @@ export interface MessagingConnection {
   groupMembers: (groupId: string) => Promise<GroupMember[]>
   automationHeart: (groupId: string, messageId: string, clientId: string) => Promise<void>
   automationDeliver: (targetGroupId: string, text: string, contacts: Array<{ phone: string; contactId?: string }>) => Promise<Array<{ phone: string; card: boolean }>>
+  automationFindUser: (phone: string) => Promise<{ id: string; name: string; avatar: string }>
+  automationSendMessage: (contactId: string, text: string) => Promise<void>
   openPersonal: (contactId: string, name: string) => Conversation
   list: (type: ConversationType) => Promise<ConversationList>
   messages: (type: ConversationType, id: string) => MessageList

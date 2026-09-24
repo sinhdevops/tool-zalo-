@@ -1,5 +1,5 @@
 import { Link } from 'react-router-dom'
-import { FiArrowRight, FiCheckCircle, FiHeart, FiInbox, FiUsers, FiZap } from 'react-icons/fi'
+import { FiArrowRight, FiCheckCircle, FiHeart, FiInbox, FiMessageSquare, FiUsers, FiZap } from 'react-icons/fi'
 import { useChatPolling } from '../messages/hooks/useChatPolling'
 import { automationApi } from './api'
 import './automation.css'
@@ -7,20 +7,23 @@ import './overview.css'
 
 export default function AutomationPage() {
   const { data, error } = useChatPolling(automationApi.state, 3000)
+  const { data: bulkData } = useChatPolling(automationApi.bulkState, 3000)
   const enabled = Boolean(data?.rules?.some(rule => rule.enabled) ?? data?.rule?.enabled)
   const connected = data?.connection === 'connected'
   const status = !data ? 'Đang tải' : !enabled ? 'Đang tắt' : connected ? 'Đang hoạt động' : 'Chờ kết nối'
+  const enabledTools = Number(enabled) + Number(Boolean(bulkData?.running))
 
   return (
     <div className="auto-page auto-hub">
       <header className="auto-hub__hero">
+        <Link className="auto-button primary" to="/automation/advisor-test">Test tư vấn</Link>
         <div>
           <span className="page-eyebrow">Trung tâm công cụ</span>
           <h1>Tự động hóa</h1>
           <p>Tất cả quy trình tự động của bạn, được tổ chức ở một nơi.</p>
         </div>
         <div className="auto-hub__summary" aria-label="Tổng quan công cụ">
-          <span><strong>1</strong>Công cụ</span><i aria-hidden="true" /><span><strong>{enabled ? 1 : 0}</strong>Đang bật</span>
+          <span><strong>2</strong>Công cụ</span><i aria-hidden="true" /><span><strong>{enabledTools}</strong>Đang bật</span>
         </div>
       </header>
 
@@ -54,6 +57,31 @@ export default function AutomationPage() {
           <div className="auto-tool-card__actions">
             <Link className="auto-tool-card__secondary" to="/leads">Xem lead</Link>
             <Link className="auto-tool-card__primary" to="/automation/group-lead">Mở công cụ <FiArrowRight /></Link>
+          </div>
+        </article>
+      </section>
+
+      <section className="auto-hub__catalog" aria-labelledby="automation-send-tools-heading">
+        <div className="auto-hub__section-heading">
+          <div><span className="auto-hub__section-icon"><FiMessageSquare /></span><div><h2 id="automation-send-tools-heading">Công cụ gửi tin</h2><p>Xử lý danh sách liên hệ theo lịch và giới hạn tốc độ đã cấu hình.</p></div></div>
+          <span className="auto-hub__count">1 công cụ</span>
+        </div>
+
+        <article className="auto-tool-card">
+          <div className="auto-tool-card__identity">
+            <span className="auto-tool-card__icon bulk-icon"><FiMessageSquare /></span>
+            <div>
+              <div className="auto-tool-card__title"><h3>Gửi tin hàng loạt</h3><span className={`auto-tool-status ${bulkData?.running ? 'active' : ''}`}><i />{bulkData?.running ? 'Đang hoạt động' : 'Đang tắt'}</span></div>
+              <p>Nhập danh sách số điện thoại, tìm tài khoản Zalo và gửi nội dung theo queue có lịch chạy và cooldown.</p>
+              <div className="auto-tool-card__tags"><span>Số điện thoại</span><span>Tin nhắn</span><span>Lịch chạy</span></div>
+            </div>
+          </div>
+          <div className="auto-tool-card__stats">
+            <span><small>Danh sách hiện tại</small><strong>{bulkData?.total ? `${bulkData.total} số` : 'Chưa có danh sách'}</strong></span>
+            <span><small>Kết quả</small><strong>{bulkData?.total ? `${bulkData.sent} đã gửi · ${bulkData.failed} lỗi` : 'Chưa chạy'}</strong></span>
+          </div>
+          <div className="auto-tool-card__actions">
+            <Link className="auto-tool-card__primary" to="/automation/bulk-message">Mở công cụ <FiArrowRight /></Link>
           </div>
         </article>
       </section>
