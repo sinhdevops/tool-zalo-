@@ -295,6 +295,30 @@ export class AutomationService {
     return this.bulkSnapshot()
   }
 
+  retryBulkFailed(id?: string) {
+    if (this.bulkRunning || this.bulkBusy) throw new ChatError('Một chiến dịch đang chạy. Hãy dừng chiến dịch hiện tại trước.', 409)
+    const campaignId = id || this.bulkCampaignId
+    if (!campaignId) throw new ChatError('Không tìm thấy chiến dịch để gửi lại.', 404)
+    const campaign = this.store.bulkCampaign(campaignId)
+    if (!campaign) throw new ChatError('Không tìm thấy cấu hình gửi tin.', 404)
+    const failed = campaign.items.filter(item => item.status === 'error')
+    if (!failed.length) throw new ChatError('Chiến dịch này không có số lỗi để gửi lại.', 409)
+    this.accounts.getMessaging(campaign.settings.accountId)
+    this.bulkCampaignId = campaign.id
+    this.bulkSettings = campaign.settings
+    this.bulkItems = campaign.items.map(item => item.status === 'error'
+      ? { ...item, status: 'pending' as const, detail: 'Đã vào hàng chờ gửi lại.', sentAt: undefined }
+      : item)
+    this.bulkRunning = true
+    this.bulkBusy = false
+    this.bulkNextActionAt = 0
+    this.bulkSuccessCount = 0
+    this.bulkPausedReason = `Đang gửi lại ${failed.length} số đã lỗi.`
+    this.saveActiveBulk('running')
+    void this.tickBulk()
+    return this.bulkSnapshot()
+  }
+
   stopBulk(id?: string) {
     if (id && this.bulkCampaignId && id !== this.bulkCampaignId) throw new ChatError('Chiến dịch này không phải chiến dịch đang chạy.', 409)
     this.bulkRunning = false
@@ -378,7 +402,7 @@ export class AutomationService {
       this.updateBulkItem(next.id, { status: 'sending', detail: `Đã tìm thấy ${user.name || 'tài khoản Zalo'}, đang gửi tin.`, name: user.name })
       await chat.automationSendMessage(user.id, this.bulkSettings.message)
       const sentAt = Date.now()
-      this.updateBulkItem(next.id, { status: 'sent', detail: 'Zalo đã xác nhận gửi tin nhắn.', name: user.name, sentAt })
+      this.updateBulkItem(next.id, { status: 'sent', detail: 'Zalo đã xử lý lệnh gửi tin nhắn thành công.', name: user.name, sentAt })
       this.bulkSuccessCount += 1
       if (this.bulkSuccessCount >= this.bulkSettings.pauseEvery) {
         this.bulkSuccessCount = 0

@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { FiAlertCircle, FiArrowLeft, FiCheckCircle, FiClock, FiMessageSquare, FiPhone, FiPlay, FiPlus, FiSquare } from 'react-icons/fi'
+import { FiAlertCircle, FiArrowLeft, FiCheckCircle, FiClock, FiMessageSquare, FiPhone, FiPlay, FiPlus, FiRefreshCw, FiSquare } from 'react-icons/fi'
 import Modal from '../../components/common/Modal'
 import { useAccounts } from '../accounts/hooks/useAccounts'
 import { useChatPolling } from '../messages/hooks/useChatPolling'
@@ -68,6 +68,13 @@ export default function BulkMessagePage() {
     finally { setBusy(false) }
   }
 
+  async function retryFailed(id = data?.activeCampaignId) {
+    setBusy(true); setActionError('')
+    try { await automationApi.bulkRetry(id); refresh() }
+    catch (cause) { setActionError(cause instanceof Error ? cause.message : 'Không gửi lại được các số lỗi.') }
+    finally { setBusy(false) }
+  }
+
   return (
     <div className="auto-page auto-detail-page bulk-page">
       <nav className="auto-breadcrumb" aria-label="Đường dẫn trang"><Link to="/automation">Tự động hóa</Link><span>/</span><span>Gửi tin hàng loạt</span></nav>
@@ -125,6 +132,7 @@ export default function BulkMessagePage() {
             {data.campaigns.map(campaign => {
               const sent = campaign.items.filter(item => item.status === 'sent').length
               const failed = campaign.items.filter(item => item.status === 'error').length
+              const pending = campaign.items.filter(item => item.status === 'pending').length
               const isActive = data.activeCampaignId === campaign.id && data.running
               return <tr key={campaign.id}>
                 <td>{new Date(campaign.createdAt).toLocaleString('vi-VN')}</td>
@@ -135,7 +143,9 @@ export default function BulkMessagePage() {
                 <td><span className={`bulk-status ${campaign.state === 'completed' ? 'sent' : campaign.state === 'running' ? 'sending' : ''}`}>{campaignStateLabels[campaign.state]}</span></td>
                 <td>{isActive
                   ? <button className="auto-button danger" disabled={busy} onClick={() => void stop()}><FiSquare /> Dừng</button>
-                  : <button className="auto-button primary" disabled={busy || data.running || campaign.state === 'completed'} onClick={() => void runCampaign(campaign.id)}><FiPlay /> Chạy</button>}
+                  : failed > 0 && pending === 0
+                    ? <button className="auto-button" disabled={busy || data.running} onClick={() => void retryFailed(campaign.id)}><FiRefreshCw /> Gửi lại lỗi</button>
+                    : <button className="auto-button primary" disabled={busy || data.running || campaign.state === 'completed'} onClick={() => void runCampaign(campaign.id)}><FiPlay /> Chạy</button>}
                 </td>
               </tr>
             })}
@@ -143,7 +153,7 @@ export default function BulkMessagePage() {
       </section>
 
       <section className="auto-log bulk-results">
-        <div className="auto-log-heading"><h2><FiMessageSquare /> Kết quả từng số</h2><span className="auto-badge">{data?.items.length ?? 0} số</span></div>
+        <div className="auto-log-heading"><h2><FiMessageSquare /> Kết quả từng số</h2><div className="auto-log-heading__actions"><span className="auto-badge">{data?.items.length ?? 0} số</span><button className="auto-button" disabled={busy || data?.running || !data?.failed} onClick={() => void retryFailed()}><FiRefreshCw /> Gửi lại {data?.failed ?? 0} số lỗi</button></div></div>
         {!data?.items.length ? <div className="auto-empty"><FiPhone /><strong>Chưa có chiến dịch đang xử lý</strong><p>Chọn một cấu hình trong bảng phía trên rồi bấm “Chạy”.</p></div> :
           <div className="auto-table-scroll"><table className="auto-table bulk-table"><thead><tr><th>Số điện thoại</th><th>Tài khoản</th><th>Trạng thái</th><th>Chi tiết</th><th>Thời gian</th></tr></thead><tbody>
             {data.items.map(item => <tr key={item.id}><td><strong>{item.phone}</strong></td><td>{item.name || '—'}</td><td><span className={`bulk-status ${item.status}`}>{statusLabels[item.status]}</span></td><td>{item.detail}</td><td>{item.sentAt ? new Date(item.sentAt).toLocaleTimeString('vi-VN') : '—'}</td></tr>)}

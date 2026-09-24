@@ -126,7 +126,6 @@ export class ZaloMessagingConnection implements MessagingConnection {
     if (typeof text !== 'string' || !text.trim() || text.length > MAX_MESSAGE_LENGTH) throw new ChatError('Nội dung tin nhắn không hợp lệ.')
     try {
       const response = await this.api.sendMessage({ msg: text }, contactId, ThreadType.User)
-      if (!response.message && response.attachment.length === 0) throw new Error('No acknowledgement')
       if (!this.disposed && response.message) {
         const conversation = this.threads.get(keyOf('personal', contactId))
         this.remember({
@@ -137,7 +136,8 @@ export class ZaloMessagingConnection implements MessagingConnection {
       }
     } catch (cause) {
       if (cause instanceof ChatError) throw cause
-      throw new ChatError('Zalo chưa xác nhận gửi tin nhắn cho số này.', 502)
+      const reason = cause instanceof Error && cause.message ? `: ${cause.message}` : ''
+      throw new ChatError(`Zalo từ chối hoặc không gửi được tin nhắn${reason}`, 502)
     }
   }
   openPersonal(contactId: string, name: string) {

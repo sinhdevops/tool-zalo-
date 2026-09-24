@@ -301,6 +301,14 @@
     gap: 12px;
 }
 
+.auto-log-heading__actions {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
 .auto-log-heading h2 {
     display: flex;
     align-items: center;

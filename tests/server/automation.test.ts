@@ -37,6 +37,24 @@ test('starting a bulk campaign searches and sends during Vietnam daytime', async
   assert.equal(f.service.bulkSnapshot().running, false)
 })
 
+test('retrying a completed bulk campaign sends only failed numbers and keeps sent numbers untouched', async (t) => {
+  const store = new AutomationStore()
+  store.saveBulkCampaign({
+    id: 'retry-failed', createdAt: 1, updatedAt: 2, state: 'completed', settings: bulkSettings,
+    items: [
+      { id: 'sent', phone: '0900000000', status: 'sent', detail: 'Đã gửi.', sentAt: 123 },
+      { id: 'failed', phone: '0380000000', status: 'error', detail: 'Lỗi cũ.' },
+    ],
+  })
+  const f = automationFixture(store, 0, () => new Date('2026-09-24T05:07:00Z'))
+  t.after(() => f.service.close())
+  f.service.retryBulkFailed('retry-failed')
+  await f.drain()
+  assert.deepEqual(f.calls.filter(call => call.kind === 'find-user').map(call => call.id), ['0380000000'])
+  assert.equal(f.service.bulkSnapshot().sent, 2)
+  assert.equal(f.service.bulkSnapshot().failed, 0)
+})
+
 test('bulk campaign shows why it is waiting, then proceeds when Vietnam schedule opens', async (t) => {
   let clock = new Date('2026-09-24T22:07:00Z') // 05:07 VN
   const f = automationFixture(new AutomationStore(), 0, () => clock)

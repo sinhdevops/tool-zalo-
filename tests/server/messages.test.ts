@@ -63,6 +63,7 @@ function fixture(documentsId?: string, unreadStore?: UnreadStore, chatStore?: En
   const friends: string[] = []
   const cards: Array<{ userId: string; phoneNumber?: string; id: string; type: ThreadType }> = []
   let failSend = false
+  let emptySendResponse = false
   let uploadedContent = ''
   // Test-only SDK adapter; synthetic data never enters the running account service.
   const api = {
@@ -82,13 +83,22 @@ function fixture(documentsId?: string, unreadStore?: UnreadStore, chatStore?: En
       sends.push({ text: typeof message === 'string' ? message : message.msg, id, type, file, quote: typeof message === 'string' ? undefined : message.quote })
       if (file) uploadedContent = await readFile(file, 'utf8')
       if (failSend) throw new Error('Uncertain transport failure')
+      if (emptySendResponse) return { message: null, attachment: [] }
       return { message: file ? null : { msgId: 777 }, attachment: file ? [{ msgId: 778 }] : [] }
     },
   } as unknown as API
   const chat = new ZaloMessagingConnection(api, '99', 'Tài khoản kiểm thử', '', unreadStore, chatStore)
-  return { chat, listener, sends, requests, syncFrames, reactions, friends, cards, fail: () => { failSend = true }, uploaded: () => uploadedContent }
+  return { chat, listener, sends, requests, syncFrames, reactions, friends, cards, fail: () => { failSend = true }, emptySendResponse: () => { emptySendResponse = true }, uploaded: () => uploadedContent }
 }
 const input = (text = 'Tin kiểm thử') => ({ requestId: '12345678-1234-1234-1234-123456789abc', text })
+
+test('bulk automation accepts a resolved SDK send even when no msgId acknowledgement is returned', async (t) => {
+  const f = fixture(); t.after(() => f.chat.dispose())
+  f.listener.emit('cipher_key', 'synthetic')
+  f.emptySendResponse()
+  await f.chat.automationSendMessage('33', 'Tin kiểm thử')
+  assert.deepEqual(f.sends.map(item => ({ text: item.text, id: item.id, type: item.type })), [{ text: 'Tin kiểm thử', id: '33', type: ThreadType.User }])
+})
 
 test('My Documents uses the account-specific send2me ID and remains first even without history', async (t) => {
   const a = fixture('555'); const b = fixture('666'); t.after(() => { a.chat.dispose(); b.chat.dispose() })

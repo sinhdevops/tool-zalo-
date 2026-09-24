@@ -43,6 +43,10 @@ export async function handleAutomation(request: IncomingMessage, response: Serve
     if (typeof data.id !== 'string') throw new ChatError('Thiếu mã cấu hình gửi tin.')
     json(response, 200, service.startBulk(data.id))
   }
+  else if (action === '/api/automation/bulk/retry' && method === 'POST') {
+    const data = await body(request)
+    json(response, 200, service.retryBulkFailed(typeof data.id === 'string' ? data.id : undefined))
+  }
   else if (action === '/api/automation/bulk/stop' && method === 'POST') {
     const data = await body(request)
     json(response, 200, service.stopBulk(typeof data.id === 'string' ? data.id : undefined))
