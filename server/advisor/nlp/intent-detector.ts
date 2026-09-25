@@ -126,5 +126,10 @@ export function detectIntents(rawText: string, context: IntentContext = {}): Int
   if (/^(?:khong|khong dau|thoi|bo di)(?: a| ah)?$/.test(value)) add(candidates, 'DENY', 0.9, order++, 'denial')
 
   if (!candidates.length) return [{ intent: 'UNCLEAR', confidence: 0.2, source: 'FALLBACK' }]
-  return candidates.sort((a, b) => a.order - b.order).map(({ order: _order, ...result }) => result)
+  return candidates.sort((a, b) => a.order - b.order).map((candidate) => ({
+    intent: candidate.intent,
+    confidence: candidate.confidence,
+    source: candidate.source,
+    ...(candidate.evidence ? { evidence: candidate.evidence } : {}),
+  }))
 }

@@ -69,7 +69,7 @@ function hasResolvedHouse(state: ConversationState) {
  * they never advance implicitly from stale history.
  */
 export function reconcileConversationStage(input: ConversationState): ConversationState {
-  let state = refreshClosingSlots(input)
+  const state = refreshClosingSlots(input)
   let stage = state.stage
   for (let guard = 0; guard < 20; guard += 1) {
     const previous = stage

@@ -108,18 +108,35 @@ export class ZaloMessagingConnection implements MessagingConnection {
   async automationFindUser(phone: string) {
     this.requireAutomationConnection()
     if (!/^0\d{9}$/.test(phone)) throw new ChatError('Số điện thoại không hợp lệ.')
-    try {
-      const user = await this.api.findUser(phone)
-      if (!user.uid || !/^\d{1,30}$/.test(user.uid) || user.uid === this.ownId || user.uid === this.myDocumentsId) throw new Error('Not found')
-      const name = user.display_name || user.zalo_name || `Zalo ${user.uid}`
-      const avatar = user.avatar || ''
-      const key = keyOf('personal', user.uid)
-      if (!this.disposed) this.setThread(key, { id: user.uid, type: 'personal', name, avatar, lastMessage: this.threads.get(key)?.lastMessage || '', updatedAt: this.threads.get(key)?.updatedAt || 0 })
-      return { id: user.uid, name, avatar }
-    } catch (cause) {
-      if (cause instanceof ChatError) throw cause
-      throw new ChatError('Không tìm thấy người dùng hoặc Zalo không cho phép tìm bằng số này.', 404)
+    let lastError: unknown
+    let invalidResponse = false
+    const lookupPhones = [phone, `84${phone.slice(1)}`]
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        // zalo-api-final converts 0xxxxxxxxx to 84xxxxxxxxx for Vietnamese sessions.
+        // The explicit 84 fallback also covers restored sessions whose language metadata differs.
+        const user = await this.api.findUser(lookupPhones[Math.min(attempt, lookupPhones.length - 1)]!)
+        if (!user?.uid || !/^\d{1,30}$/.test(user.uid) || user.uid === this.ownId || user.uid === this.myDocumentsId) {
+          invalidResponse = true
+        } else {
+          const name = user.display_name || user.zalo_name || `Zalo ${user.uid}`
+          const avatar = user.avatar || ''
+          const key = keyOf('personal', user.uid)
+          if (!this.disposed) this.setThread(key, { id: user.uid, type: 'personal', name, avatar, lastMessage: this.threads.get(key)?.lastMessage || '', updatedAt: this.threads.get(key)?.updatedAt || 0 })
+          return { id: user.uid, name, avatar }
+        }
+      } catch (cause) {
+        lastError = cause
+      }
+      if (attempt < 2) await new Promise<void>((resolve) => setTimeout(resolve, 500 * (attempt + 1)))
     }
+    if (lastError) {
+      const apiCode = typeof lastError === 'object' && lastError !== null && 'code' in lastError && typeof lastError.code === 'number' ? ` (mã ${lastError.code})` : ''
+      const reason = lastError instanceof Error && lastError.message ? `: ${lastError.message}` : ''
+      throw new ChatError(`Zalo lỗi khi tra cứu số${apiCode}${reason}. Đã thử lại 3 lần.`, 502)
+    }
+    if (invalidResponse) throw new ChatError('Zalo không trả về UID cho số này sau 3 lần tra cứu.', 404)
+    throw new ChatError('Không tra cứu được tài khoản Zalo cho số này.', 502)
   }
   async automationSendMessage(contactId: string, text: string) {
     this.requireAutomationConnection(contactId)

@@ -64,6 +64,8 @@ function fixture(documentsId?: string, unreadStore?: UnreadStore, chatStore?: En
   const cards: Array<{ userId: string; phoneNumber?: string; id: string; type: ThreadType }> = []
   let failSend = false
   let emptySendResponse = false
+  let findUserFailures = 0
+  let findUserCalls = 0
   let uploadedContent = ''
   // Test-only SDK adapter; synthetic data never enters the running account service.
   const api = {
@@ -72,7 +74,11 @@ function fixture(documentsId?: string, unreadStore?: UnreadStore, chatStore?: En
     async getAllFriends() { return [{ userId: '11', displayName: 'Liên hệ kiểm thử', avatar: '' }] },
     async getAllGroups() { return { gridVerMap: { '22': '1' } } },
     async getGroupInfo() { return { gridInfoMap: { '22': { groupId: '22', name: 'Nhóm kiểm thử', fullAvt: '', totalMember: 3 } } } },
-    async findUser() { return { uid: '33', display_name: 'Liên hệ mới', avatar: '' } },
+    async findUser() {
+      findUserCalls += 1
+      if (findUserFailures > 0) { findUserFailures -= 1; throw Object.assign(new Error('Lookup temporarily unavailable'), { code: 429 }) }
+      return { uid: '33', display_name: 'Liên hệ mới', avatar: '' }
+    },
     async addReaction(reaction: Reactions, destination: AddReactionDestination) { reactions.push({ reaction, destination }); if (failSend) throw new Error('Failed'); return { msgIds: [1] } },
     async sendFriendRequest(_text: string, id: string) { friends.push(id); return '' },
     async sendCard(options: { userId: string; phoneNumber?: string }, id: string, type: ThreadType) { cards.push({ ...options, id, type }); return { msgId: 779 } },
@@ -88,7 +94,7 @@ function fixture(documentsId?: string, unreadStore?: UnreadStore, chatStore?: En
     },
   } as unknown as API
   const chat = new ZaloMessagingConnection(api, '99', 'Tài khoản kiểm thử', '', unreadStore, chatStore)
-  return { chat, listener, sends, requests, syncFrames, reactions, friends, cards, fail: () => { failSend = true }, emptySendResponse: () => { emptySendResponse = true }, uploaded: () => uploadedContent }
+  return { chat, listener, sends, requests, syncFrames, reactions, friends, cards, fail: () => { failSend = true }, emptySendResponse: () => { emptySendResponse = true }, failFindUser: (count: number) => { findUserFailures = count }, findUserCallCount: () => findUserCalls, uploaded: () => uploadedContent }
 }
 const input = (text = 'Tin kiểm thử') => ({ requestId: '12345678-1234-1234-1234-123456789abc', text })
 
@@ -98,6 +104,15 @@ test('bulk automation accepts a resolved SDK send even when no msgId acknowledge
   f.emptySendResponse()
   await f.chat.automationSendMessage('33', 'Tin kiểm thử')
   assert.deepEqual(f.sends.map(item => ({ text: item.text, id: item.id, type: item.type })), [{ text: 'Tin kiểm thử', id: '33', type: ThreadType.User }])
+})
+
+test('bulk automation retries transient Zalo lookup failures before reporting a phone as missing', async (t) => {
+  const f = fixture(); t.after(() => f.chat.dispose())
+  f.listener.emit('cipher_key', 'synthetic')
+  f.failFindUser(2)
+  const user = await f.chat.automationFindUser('0369955757')
+  assert.equal(user.id, '33')
+  assert.equal(f.findUserCallCount(), 3)
 })
 
 test('My Documents uses the account-specific send2me ID and remains first even without history', async (t) => {
