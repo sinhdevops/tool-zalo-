@@ -7,7 +7,7 @@ import type { API, Message, SendMessageQuote } from 'zalo-api-final'
 import type { ChatConnectionStatus, ChatMessage, Conversation, ConversationType, PhoneSyncState, SendChatInput, MessageAction } from '../../shared/messages.ts'
 import { CHAT_REACTIONS, MAX_ATTACHMENT_BYTES, MAX_MESSAGE_LENGTH } from '../../shared/messages.ts'
 import { ChatError } from './types.ts'
-import type { MessagingConnection } from './types.ts'
+import type { FriendContact, MessagingConnection } from './types.ts'
 import { normalizeMessage, safeMediaUrl } from './normalize.ts'
 import { readDocumentsHistory } from './documents-history.ts'
 import { UnreadStore } from './unread-store.ts'
@@ -73,6 +73,21 @@ export class ZaloMessagingConnection implements MessagingConnection {
     // Only use sender names for IDs actually in the current group membership.
     for (const id of ids) if (!members.has(id)) members.set(id, { id, name: this.items.get(keyOf('group', groupId))?.find((m) => m.senderId === id)?.senderName || `Zalo ${id}` })
     return [...members.values()]
+  }
+  async friends(): Promise<FriendContact[]> {
+    this.requireAutomationConnection()
+    const friends = await this.api.getAllFriends()
+    return friends.map((friend) => ({
+      id: friend.userId,
+      name: friend.displayName || friend.zaloName || friend.userId,
+      avatar: friend.avatar || '',
+      createdAt: Number.isFinite(friend.createdTs) && friend.createdTs > 0 ? friend.createdTs : null,
+    }))
+  }
+  async removeFriend(friendId: string) {
+    this.requireAutomationConnection(friendId)
+    await this.api.removeFriend(friendId)
+    this.loadedAt.personal = 0
   }
   private requireAutomationConnection(contactId?: string) {
     if (this.disposed || this.state !== 'connected') throw new ChatError('Kết nối Zalo chưa sẵn sàng.', 409)

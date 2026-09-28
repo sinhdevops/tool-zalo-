@@ -11,6 +11,8 @@ export interface MessagingConnection {
   automationSendMessage: (contactId: string, text: string) => Promise<void>
   openPersonal: (contactId: string, name: string) => Conversation
   list: (type: ConversationType) => Promise<ConversationList>
+  friends: () => Promise<FriendContact[]>
+  removeFriend: (friendId: string) => Promise<void>
   messages: (type: ConversationType, id: string) => MessageList
   history: (type: ConversationType, id?: string) => void
   markRead: (type: ConversationType, id: string, through: number) => { count: number; through: number }
@@ -22,6 +24,13 @@ export interface MessagingConnection {
   phoneSync: () => PhoneSyncState
   requestPhoneSync: () => Promise<PhoneSyncState>
   dispose: () => void
+}
+
+export interface FriendContact {
+  id: string
+  name: string
+  avatar: string
+  createdAt: number | null
 }
 export class ChatError extends Error {
   status: number
