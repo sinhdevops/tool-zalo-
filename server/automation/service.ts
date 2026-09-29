@@ -322,7 +322,7 @@ export class AutomationService {
   stopBulk(id?: string) {
     if (id && this.bulkCampaignId && id !== this.bulkCampaignId) throw new ChatError('Chiến dịch này không phải chiến dịch đang chạy.', 409)
     this.bulkRunning = false
-    this.bulkPausedReason = 'Đã dừng thủ công.'
+    this.bulkPausedReason = 'Đã dừng thủ công. Nếu đang gửi một tin, lệnh đã gửi tới Zalo có thể vẫn hoàn tất.'
     this.saveActiveBulk('stopped')
     return this.bulkSnapshot()
   }
@@ -397,8 +397,14 @@ export class AutomationService {
     }
     this.bulkBusy = true
     this.updateBulkItem(next.id, { status: 'searching', detail: 'Đang tìm tài khoản Zalo theo số điện thoại.' })
+    let foundUserName = ''
     try {
-      const user = await chat.automationFindUser(next.phone)
+      const user = await chat.automationFindUser(next.phone, detail => this.updateBulkItem(next.id, { status: 'searching', detail }))
+      if (!this.bulkRunning) {
+        this.updateBulkItem(next.id, { status: 'pending', detail: `Đã dừng sau khi tìm thấy ${user.name || 'tài khoản Zalo'}; chưa gửi tin. Có thể chạy tiếp.` })
+        return
+      }
+      foundUserName = user.name
       this.updateBulkItem(next.id, { status: 'sending', detail: `Đã tìm thấy ${user.name || 'tài khoản Zalo'}, đang gửi tin.`, name: user.name })
       await chat.automationSendMessage(user.id, this.bulkSettings.message)
       const sentAt = Date.now()
@@ -412,7 +418,8 @@ export class AutomationService {
         this.bulkNextActionAt = sentAt + this.bulkSettings.delaySeconds * 1000
       }
     } catch (cause) {
-      const detail = cause instanceof Error ? cause.message : 'Không xử lý được số điện thoại này.'
+      const reason = cause instanceof Error ? cause.message : 'Không xử lý được số điện thoại này.'
+      const detail = foundUserName ? `Đã tìm thấy ${foundUserName}, nhưng gửi tin thất bại: ${reason}` : reason
       this.updateBulkItem(next.id, { status: 'error', detail })
       this.bulkSuccessCount = 0
       this.bulkNextActionAt = Date.now() + this.bulkSettings.delaySeconds * 1000

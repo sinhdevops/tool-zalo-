@@ -120,37 +120,57 @@ export class ZaloMessagingConnection implements MessagingConnection {
     }
     return results
   }
-  async automationFindUser(phone: string) {
+  async automationFindUser(phone: string, onProgress?: (detail: string) => void) {
     this.requireAutomationConnection()
     if (!/^0\d{9}$/.test(phone)) throw new ChatError('Số điện thoại không hợp lệ.')
     let lastError: unknown
-    let invalidResponse = false
-    const lookupPhones = [phone, `84${phone.slice(1)}`]
-    for (let attempt = 0; attempt < 3; attempt += 1) {
-      try {
-        // zalo-api-final converts 0xxxxxxxxx to 84xxxxxxxxx for Vietnamese sessions.
-        // The explicit 84 fallback also covers restored sessions whose language metadata differs.
-        const user = await this.api.findUser(lookupPhones[Math.min(attempt, lookupPhones.length - 1)]!)
-        if (!user?.uid || !/^\d{1,30}$/.test(user.uid) || user.uid === this.ownId || user.uid === this.myDocumentsId) {
-          invalidResponse = true
-        } else {
+    let emptyResponse = false
+    const context = this.api.getContext()
+    // findUser() automatically turns 0xxxxxxxxx into 84xxxxxxxxx for Vietnamese sessions.
+    // Avoid querying the same effective number twice while retaining a country-code fallback elsewhere.
+    const candidates = context.language === 'vi' ? [`84${phone.slice(1)}`] : [phone, `84${phone.slice(1)}`]
+    let attempts = 0
+    for (const candidate of [...new Set(candidates)]) {
+      for (let retry = 0; retry < 3; retry += 1) {
+        attempts += 1
+        onProgress?.(`Đang chờ Zalo tra cứu số (lần ${attempts}); chỉ tiếp tục sau khi có phản hồi.`)
+        try {
+          const user = await this.api.findUser(candidate)
+          if (!user?.uid) {
+            // The SDK treats Zalo error 216 as a resolved empty response rather than an exception.
+            emptyResponse = true
+            break
+          }
+          if (!/^\d{1,30}$/.test(user.uid) || user.uid === this.ownId || user.uid === this.myDocumentsId) {
+            emptyResponse = true
+            break
+          }
           const name = user.display_name || user.zalo_name || `Zalo ${user.uid}`
           const avatar = user.avatar || ''
           const key = keyOf('personal', user.uid)
           if (!this.disposed) this.setThread(key, { id: user.uid, type: 'personal', name, avatar, lastMessage: this.threads.get(key)?.lastMessage || '', updatedAt: this.threads.get(key)?.updatedAt || 0 })
           return { id: user.uid, name, avatar }
+        } catch (cause) {
+          const code = typeof cause === 'object' && cause !== null && 'code' in cause && typeof cause.code === 'number' ? cause.code : null
+          if (code === 216) {
+            emptyResponse = true
+            break
+          }
+          lastError = cause
+          const transient = code === null || code === 429 || code >= 500
+          if (!transient || retry === 2) break
+          const waitMs = 1000 * (retry + 1)
+          onProgress?.(`Zalo chưa phản hồi ổn định; chờ ${waitMs / 1000} giây rồi thử lại lần ${retry + 2}.`)
+          await new Promise<void>((resolve) => setTimeout(resolve, waitMs))
         }
-      } catch (cause) {
-        lastError = cause
       }
-      if (attempt < 2) await new Promise<void>((resolve) => setTimeout(resolve, 500 * (attempt + 1)))
     }
     if (lastError) {
       const apiCode = typeof lastError === 'object' && lastError !== null && 'code' in lastError && typeof lastError.code === 'number' ? ` (mã ${lastError.code})` : ''
       const reason = lastError instanceof Error && lastError.message ? `: ${lastError.message}` : ''
-      throw new ChatError(`Zalo lỗi khi tra cứu số${apiCode}${reason}. Đã thử lại 3 lần.`, 502)
+      throw new ChatError(`Không nhận được kết quả tra cứu ổn định từ Zalo${apiCode}${reason}. Đã chờ và thử ${attempts} lần.`, 502)
     }
-    if (invalidResponse) throw new ChatError('Zalo không trả về UID cho số này sau 3 lần tra cứu.', 404)
+    if (emptyResponse) throw new ChatError('Zalo đã phản hồi nhưng không trả về UID hợp lệ cho số này (mã 216 hoặc không tìm thấy tài khoản).', 404)
     throw new ChatError('Không tra cứu được tài khoản Zalo cho số này.', 502)
   }
   async automationSendMessage(contactId: string, text: string) {

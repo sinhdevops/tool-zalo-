@@ -119,8 +119,8 @@ export default function BulkMessagePage() {
           <div className="auto-detail-card__heading"><div><span>01</span><h2>Luồng xử lý</h2></div></div>
           <ol className="auto-process">
             <li><span>1</span><div><strong>Đọc từng số điện thoại</strong><p>Danh sách nhập theo dạng mỗi dòng một số, tự bỏ số trùng.</p></div></li>
-            <li><span>2</span><div><strong>Tìm tài khoản Zalo</strong><p>Không tìm thấy sẽ ghi lỗi cho số đó và chuyển sang số tiếp theo.</p></div></li>
-            <li><span>3</span><div><strong>Gửi và chờ theo rate limit</strong><p>Ngoài khung giờ cấu hình, queue tự tạm dừng và giữ nguyên tiến độ.</p></div></li>
+            <li><span>2</span><div><strong>Tìm và chờ phản hồi Zalo</strong><p>Chờ từng yêu cầu tra cứu hoàn tất; chỉ thử lại lỗi tạm thời, không gửi trước khi nhận UID.</p></div></li>
+            <li><span>3</span><div><strong>Gửi và chờ theo rate limit</strong><p>Nếu tìm thấy nhưng Zalo chặn nhận tin, kết quả sẽ ghi riêng lỗi gửi. Ngoài khung giờ, queue tạm dừng và giữ tiến độ.</p></div></li>
           </ol>
         </section>
       </div>
