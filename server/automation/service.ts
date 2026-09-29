@@ -211,9 +211,10 @@ export class AutomationService {
           else if (chat.status() === 'disconnected' && Date.now() - (this.lastReconnect.get(accountId) ?? 0) > 30_000) { this.lastReconnect.set(accountId, Date.now()); chat.reconnect() }
         } catch { this.bindings.get(accountId)?.unsubscribe(); this.bindings.delete(accountId) }
       }
-      if (!this.closed && !this.busy && ![...this.bulkRuns.values()].some(run => run.running || run.busy)) {
+      if (!this.closed && !this.busy) {
         for (const job of this.store.jobs('pending')) {
           if (!this.active(job)) { this.cancel(job); continue }
+          if (this.bulkAccountsBusy.has(job.accountId)) continue
           const chat = this.bindings.get(job.accountId)?.chat
           if (job.notBefore <= Date.now() && chat?.status() === 'connected') {
             this.busy = true; void this.run(job, chat).finally(() => { this.busy = false }); break
