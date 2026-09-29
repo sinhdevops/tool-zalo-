@@ -28,18 +28,23 @@ export interface BulkMessageItem {
   phone: string
   status: BulkMessageItemStatus
   detail: string
+  retryAt?: number
+  retryCount?: number
   name?: string
   sentAt?: number
 }
 export interface BulkMessageSettings {
   accountId: string
   message: string
+  image?: { name: string; mimeType: string }
   startTime: string
   endTime: string
   delaySeconds: number
+  dailyLimit?: number
   pauseEvery: number
   pauseSeconds: number
 }
+export interface BulkMessageImageUpload { name: string; mimeType: string; base64: string }
 export type BulkMessageCampaignState = 'ready' | 'running' | 'stopped' | 'completed'
 export interface BulkMessageCampaign {
   id: string
@@ -47,6 +52,7 @@ export interface BulkMessageCampaign {
   updatedAt: number
   state: BulkMessageCampaignState
   settings: BulkMessageSettings
+  dailyResumeAt?: number
   items: BulkMessageItem[]
 }
 export interface BulkMessageSnapshot {

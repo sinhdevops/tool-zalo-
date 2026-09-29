@@ -19,6 +19,7 @@ export class AutomationStore {
       CREATE TABLE IF NOT EXISTS automation_cards(id INTEGER PRIMARY KEY, body TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS automation_jobs(id TEXT PRIMARY KEY, state TEXT NOT NULL, body TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS bulk_message_campaigns(id TEXT PRIMARY KEY, updatedAt INTEGER NOT NULL, body TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS bulk_message_images(campaign_id TEXT PRIMARY KEY, name TEXT NOT NULL, mimeType TEXT NOT NULL, data BLOB NOT NULL);
       CREATE TABLE IF NOT EXISTS automation_logs(id INTEGER PRIMARY KEY, at INTEGER NOT NULL, text TEXT NOT NULL, leadId TEXT);`)
     this.pruneLogs()
     // Never execute jobs created by the removed friend/private-message workflow.
@@ -87,6 +88,15 @@ export class AutomationStore {
   saveBulkCampaign(campaign: BulkMessageCampaign) {
     this.db.prepare('INSERT INTO bulk_message_campaigns VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET updatedAt=excluded.updatedAt,body=excluded.body').run(campaign.id, campaign.updatedAt, JSON.stringify(campaign))
   }
+  saveBulkImage(id: string, image: { name: string; mimeType: string; base64: string }) {
+    this.db.prepare('INSERT INTO bulk_message_images VALUES(?,?,?,?) ON CONFLICT(campaign_id) DO UPDATE SET name=excluded.name,mimeType=excluded.mimeType,data=excluded.data')
+      .run(id, image.name, image.mimeType, Buffer.from(image.base64, 'base64'))
+  }
+  bulkImage(id: string): { name: string; mimeType: string; base64: string } | undefined {
+    const row = this.db.prepare('SELECT name,mimeType,data FROM bulk_message_images WHERE campaign_id=?').get(id) as { name: string; mimeType: string; data: Uint8Array } | undefined
+    return row ? { name: row.name, mimeType: row.mimeType, base64: Buffer.from(row.data).toString('base64') } : undefined
+  }
+  deleteBulkImage(id: string) { this.db.prepare('DELETE FROM bulk_message_images WHERE campaign_id=?').run(id) }
   log(text: string, leadId?: string) {
     this.db.prepare('INSERT INTO automation_logs(at,text,leadId) VALUES(?,?,?)').run(Date.now(), text, leadId ?? null)
     this.pruneLogs()

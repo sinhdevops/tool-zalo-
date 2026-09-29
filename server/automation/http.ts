@@ -5,10 +5,11 @@ import { LEAD_STAGES } from '../../shared/automation.ts'
 import type { LeadStage } from '../../shared/automation.ts'
 import { phones } from './parse.ts'
 import { AutomationStore } from './store.ts'
+import { MAX_ATTACHMENT_BYTES } from '../../shared/messages.ts'
 
-async function body(request: IncomingMessage): Promise<Record<string, unknown>> {
+async function body(request: IncomingMessage, maxBytes = 128 * 1024): Promise<Record<string, unknown>> {
   const chunks: Buffer[] = []; let size = 0
-  for await (const chunk of request) { const bytes = Buffer.from(chunk); size += bytes.length; if (size > 128 * 1024) throw new ChatError('Yêu cầu quá lớn.', 413); chunks.push(bytes) }
+  for await (const chunk of request) { const bytes = Buffer.from(chunk); size += bytes.length; if (size > maxBytes) throw new ChatError('Yêu cầu quá lớn.', 413); chunks.push(bytes) }
   try { const value: unknown = JSON.parse(Buffer.concat(chunks).toString()); if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(); return value as Record<string, unknown> } catch { throw new ChatError('Nội dung yêu cầu không hợp lệ.') }
 }
 export async function handleAutomation(request: IncomingMessage, response: ServerResponse, url: URL, service: AutomationService, json: (response: ServerResponse, status: number, value: unknown) => void) {
@@ -34,9 +35,17 @@ export async function handleAutomation(request: IncomingMessage, response: Serve
   else if (action === '/api/automation/state' && method === 'GET') json(response, 200, service.snapshot())
   else if (action === '/api/automation/bulk' && method === 'GET') json(response, 200, service.bulkSnapshot())
   else if (action === '/api/automation/bulk/create' && method === 'POST') {
-    const data = await body(request)
+    const data = await body(request, Math.ceil(MAX_ATTACHMENT_BYTES * 4 / 3) + 256 * 1024)
     if (typeof data.accountId !== 'string' || typeof data.message !== 'string' || typeof data.phones !== 'string' || typeof data.startTime !== 'string' || typeof data.endTime !== 'string' || typeof data.delaySeconds !== 'number') throw new ChatError('Cấu hình gửi hàng loạt không hợp lệ.')
-    json(response, 200, service.createBulk({ accountId: data.accountId, message: data.message, startTime: data.startTime, endTime: data.endTime, delaySeconds: data.delaySeconds, pauseEvery: 2, pauseSeconds: 60 }, data.phones.split(/\r?\n/)))
+    const image = data.image === undefined ? undefined : data.image as { name: string; mimeType: string; base64: string }
+    json(response, 200, service.createBulk({ accountId: data.accountId, message: data.message, startTime: data.startTime, endTime: data.endTime, delaySeconds: data.delaySeconds, dailyLimit: typeof data.dailyLimit === 'number' ? data.dailyLimit : 130, pauseEvery: 2, pauseSeconds: 60 }, data.phones.split(/\r?\n/), image))
+  }
+  else if (action === '/api/automation/bulk/update' && method === 'POST') {
+    const data = await body(request, Math.ceil(MAX_ATTACHMENT_BYTES * 4 / 3) + 256 * 1024)
+    if (typeof data.id !== 'string' || typeof data.accountId !== 'string' || typeof data.message !== 'string' || typeof data.startTime !== 'string' || typeof data.endTime !== 'string' || typeof data.delaySeconds !== 'number') throw new ChatError('Cấu hình chỉnh sửa không hợp lệ.')
+    if (data.removeImage !== undefined && typeof data.removeImage !== 'boolean') throw new ChatError('Trạng thái ảnh đính kèm không hợp lệ.')
+    const image = data.image === undefined ? undefined : data.image as { name: string; mimeType: string; base64: string }
+    json(response, 200, service.updateBulkCampaign(data.id, { accountId: data.accountId, message: data.message, startTime: data.startTime, endTime: data.endTime, delaySeconds: data.delaySeconds, dailyLimit: typeof data.dailyLimit === 'number' ? data.dailyLimit : 130, pauseEvery: 2, pauseSeconds: 60 }, image, data.removeImage === true))
   }
   else if (action === '/api/automation/bulk/start' && method === 'POST') {
     const data = await body(request)

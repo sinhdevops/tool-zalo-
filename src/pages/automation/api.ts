@@ -1,4 +1,4 @@
-import type { AutomationLogs, AutomationSnapshot, BulkMessageSnapshot, GroupMember, Lead, LeadStage } from '../../../shared/automation'
+import type { AutomationLogs, AutomationSnapshot, BulkMessageImageUpload, BulkMessageSnapshot, GroupMember, Lead, LeadStage } from '../../../shared/automation'
 import type { Conversation } from '../../../shared/messages'
 import { apiUrl } from '../../api-url'
 async function request<T>(path: string, signal?: AbortSignal, data?: unknown): Promise<T> {
@@ -16,7 +16,8 @@ export const automationApi = {
   configure: (accountId: string, groupId: string, senderId: string, targetGroupId: string, id: string | null = null) => request<AutomationSnapshot>('/api/automation/rule', undefined, { accountId, groupId, senderId, targetGroupId, id }),
   toggle: (enabled: boolean, id: string) => request<AutomationSnapshot>('/api/automation/enabled', undefined, { enabled, id }),
   bulkState: (signal: AbortSignal) => request<BulkMessageSnapshot>('/api/automation/bulk', signal),
-  bulkCreate: (data: { accountId: string; phones: string; message: string; startTime: string; endTime: string; delaySeconds: number }) => request<BulkMessageSnapshot>('/api/automation/bulk/create', undefined, data),
+  bulkCreate: (data: { accountId: string; phones: string; message: string; startTime: string; endTime: string; delaySeconds: number; dailyLimit: number; image?: BulkMessageImageUpload }) => request<BulkMessageSnapshot>('/api/automation/bulk/create', undefined, data),
+  bulkUpdate: (data: { id: string; accountId: string; message: string; startTime: string; endTime: string; delaySeconds: number; dailyLimit: number; image?: BulkMessageImageUpload; removeImage: boolean }) => request<BulkMessageSnapshot>('/api/automation/bulk/update', undefined, data),
   bulkStart: (id: string) => request<BulkMessageSnapshot>('/api/automation/bulk/start', undefined, { id }),
   bulkRetry: (id?: string) => request<BulkMessageSnapshot>('/api/automation/bulk/retry', undefined, id ? { id } : {}),
   bulkStop: (id?: string) => request<BulkMessageSnapshot>('/api/automation/bulk/stop', undefined, id ? { id } : {}),

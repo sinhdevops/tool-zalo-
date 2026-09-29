@@ -1,16 +1,29 @@
 import { randomUUID } from 'node:crypto'
 import type { AccountService } from '../accounts/service.ts'
 import type { MessagingConnection } from '../messages/types.ts'
-import { ChatError } from '../messages/types.ts'
-import type { AutomationRule, BulkMessageCampaign, BulkMessageItem, BulkMessageSettings, BulkMessageSnapshot, IncomingMessage, Lead } from '../../shared/automation.ts'
+import { ChatError, ZaloLookupRateLimitError } from '../messages/types.ts'
+import type { AutomationRule, BulkMessageCampaign, BulkMessageImageUpload, BulkMessageItem, BulkMessageSettings, BulkMessageSnapshot, IncomingMessage, Lead } from '../../shared/automation.ts'
 import { AutomationStore } from './store.ts'
 import type { Job } from './store.ts'
 import { phones, orderFields } from './parse.ts'
+import { isLookupFailureDetail, lookupRetryDelay, retryAtFromLookupDetail, vietnamTime } from './lookup-policy.ts'
+
+const VIETNAM_OFFSET_MS = 7 * 60 * 60 * 1000
+const DAY_MS = 24 * 60 * 60 * 1000
 
 // Campaign schedules are entered in Vietnam time, regardless of the server's timezone.
 export function withinVietnamTimeWindow(start: number, end: number, now: Date) {
   const current = ((now.getUTCHours() + 7) % 24) * 60 + now.getUTCMinutes()
   return current >= start && current < end
+}
+
+interface BulkRunState {
+  campaignId: string
+  running: boolean
+  busy: boolean
+  nextActionAt: number
+  successCount: number
+  pausedReason: string
 }
 
 export class AutomationService {
@@ -25,32 +38,51 @@ export class AutomationService {
   private lastReconnect = new Map<string, number>()
   private backfilledRevisions = new Map<string, string>()
   private settleMs?: number
-  private bulkSettings: BulkMessageSettings | null = null
-  private bulkItems: BulkMessageItem[] = []
-  private bulkCampaignId?: string
-  private bulkRunning = false
-  private bulkBusy = false
-  private bulkNextActionAt = 0
-  private bulkSuccessCount = 0
-  private bulkPausedReason = ''
+  private bulkRuns = new Map<string, BulkRunState>()
+  private bulkAccountsBusy = new Set<string>()
+  private bulkFocusCampaignId?: string
   private bulkClock: () => Date
   constructor(accounts: Pick<AccountService, 'getMessaging'>, store: AutomationStore, settleMs?: number, bulkClock: () => Date = () => new Date()) {
     this.accounts = accounts; this.store = store; this.settleMs = settleMs
     this.bulkClock = bulkClock
-    const running = store.bulkCampaigns().find(campaign => campaign.state === 'running')
-    if (running) {
-      this.bulkCampaignId = running.id
-      this.bulkSettings = running.settings
-      // An interrupted send may have reached Zalo; never send that number again automatically.
-      this.bulkItems = running.items.map(item => ['searching', 'sending'].includes(item.status)
-        ? { ...item, status: 'error', detail: 'Máy chủ khởi động lại khi đang xử lý số này. Kiểm tra Zalo trước khi gửi lại.' }
-        : item)
-      this.bulkRunning = this.bulkItems.some(item => item.status === 'pending')
-      const lastSentAt = Math.max(0, ...this.bulkItems.map(item => item.sentAt ?? 0))
-      this.bulkNextActionAt = lastSentAt ? lastSentAt + Math.max(running.settings.delaySeconds, running.settings.pauseSeconds) * 1000 : 0
-      this.bulkPausedReason = this.bulkRunning ? 'Đang khôi phục chiến dịch sau khi khởi động lại.' : 'Đã xử lý xong danh sách.'
-      this.saveActiveBulk(this.bulkRunning ? 'running' : 'completed')
+    for (const campaign of store.bulkCampaigns()) {
+      let current = campaign
+      let running = campaign.state === 'running'
+      let nextActionAt = 0
+      let pausedReason = campaign.state === 'completed' ? 'Đã xử lý xong danh sách.' : campaign.state === 'stopped' ? 'Đã dừng thủ công.' : 'Chưa chạy'
+      if (running) {
+        const interruptedSend = campaign.items.some(item => item.status === 'sending')
+        const items = campaign.items.map(item => {
+          if (item.status === 'searching') {
+            const retryCount = (item.retryCount ?? 0) + 1
+            return { ...item, status: 'pending' as const, retryCount, retryAt: Date.now() + lookupRetryDelay(retryCount), detail: 'Máy chủ khởi động lại khi đang tra cứu số này. Sẽ thử lại đúng số này trước khi tiếp tục.' }
+          }
+          if (item.status === 'sending') return { ...item, status: 'error' as const, detail: 'Máy chủ khởi động lại khi đang gửi. Kiểm tra Zalo trước khi gửi lại để tránh gửi trùng.' }
+          if (item.status === 'error' && isLookupFailureDetail(item.detail)) {
+            const retryCount = (item.retryCount ?? 0) + 1
+            const retryAt = retryAtFromLookupDetail(item.detail) ?? Date.now() + lookupRetryDelay(retryCount)
+            return { ...item, status: 'pending' as const, retryCount, retryAt, detail: `Lỗi tra cứu cũ. Sẽ thử lại đúng số này lúc ${vietnamTime(retryAt)} (giờ Việt Nam). ${item.detail}` }
+          }
+          return item
+        })
+        const failedItem = items.find(item => item.status === 'error')
+        running = !interruptedSend && !failedItem && items.some(item => item.status === 'pending')
+        const lastSentAt = Math.max(0, ...items.map(item => item.sentAt ?? 0))
+        nextActionAt = Math.max(
+          lastSentAt ? lastSentAt + Math.max(campaign.settings.delaySeconds, campaign.settings.pauseSeconds) * 1000 : 0,
+          ...items.map(item => item.retryAt ?? 0),
+          campaign.dailyResumeAt ?? 0,
+        )
+        pausedReason = interruptedSend
+          ? 'Đã dừng tại số đang gửi khi máy chủ khởi động lại. Kiểm tra Zalo trước khi gửi lại.'
+          : failedItem ? `Đã dừng tại số lỗi ${failedItem.phone}. Hãy xử lý số này trước khi tiếp tục.`
+            : running ? 'Đang khôi phục chiến dịch sau khi khởi động lại.' : 'Đã xử lý xong danh sách.'
+        current = { ...campaign, updatedAt: Date.now(), state: running ? 'running' : interruptedSend || failedItem ? 'stopped' : 'completed', items }
+        store.saveBulkCampaign(current)
+      }
+      this.bulkRuns.set(campaign.id, { campaignId: campaign.id, running, busy: false, nextActionAt, successCount: 0, pausedReason })
     }
+    this.bulkFocusCampaignId = store.bulkCampaigns()[0]?.id
   }
   start() { this.timer = setInterval(() => { void this.tick() }, 1500); this.timer.unref(); void this.tick() }
   snapshot() { const rules = this.store.rules().map(rule => ({ ...rule, connection: this.bindings.get(rule.accountId)?.chat.status() ?? 'disconnected' })); return { rules, rule: this.store.rule(), connection: rules.some(rule => rule.enabled && rule.connection === 'connected') ? 'connected' : 'disconnected', error: this.fault, ...this.store.stats() } }
@@ -179,7 +211,7 @@ export class AutomationService {
           else if (chat.status() === 'disconnected' && Date.now() - (this.lastReconnect.get(accountId) ?? 0) > 30_000) { this.lastReconnect.set(accountId, Date.now()); chat.reconnect() }
         } catch { this.bindings.get(accountId)?.unsubscribe(); this.bindings.delete(accountId) }
       }
-      if (!this.closed && !this.busy && !this.bulkBusy) {
+      if (!this.closed && !this.busy && ![...this.bulkRuns.values()].some(run => run.running || run.busy)) {
         for (const job of this.store.jobs('pending')) {
           if (!this.active(job)) { this.cancel(job); continue }
           const chat = this.bindings.get(job.accountId)?.chat
@@ -229,21 +261,28 @@ export class AutomationService {
   }
 
   bulkSnapshot(): BulkMessageSnapshot {
-    const pending = this.bulkItems.filter(item => ['pending', 'searching', 'sending'].includes(item.status)).length
-    const sent = this.bulkItems.filter(item => item.status === 'sent').length
-    const failed = this.bulkItems.filter(item => item.status === 'error').length
+    const campaigns = this.store.bulkCampaigns()
+    const focused = campaigns.find(campaign => campaign.id === this.bulkFocusCampaignId && campaign.state === 'running')
+      ?? campaigns.find(campaign => campaign.state === 'running')
+      ?? campaigns.find(campaign => campaign.id === this.bulkFocusCampaignId)
+      ?? campaigns[0]
+    const run = focused ? this.bulkRuns.get(focused.id) : undefined
+    const items = focused?.items ?? []
+    const pending = items.filter(item => ['pending', 'searching', 'sending'].includes(item.status)).length
+    const sent = items.filter(item => item.status === 'sent').length
+    const failed = items.filter(item => item.status === 'error').length
     return {
-      ...(this.bulkCampaignId ? { activeCampaignId: this.bulkCampaignId } : {}),
-      running: this.bulkRunning,
-      pausedReason: this.bulkPausedReason,
-      settings: this.bulkSettings,
-      items: this.bulkItems,
-      campaigns: this.store.bulkCampaigns(),
-      total: this.bulkItems.length,
+      ...(focused ? { activeCampaignId: focused.id } : {}),
+      running: campaigns.some(campaign => campaign.state === 'running'),
+      pausedReason: run?.pausedReason ?? '',
+      settings: focused?.settings ?? null,
+      items,
+      campaigns,
+      total: items.length,
       pending,
       sent,
       failed,
-      ...(this.bulkNextActionAt > Date.now() ? { nextActionAt: this.bulkNextActionAt } : {}),
+      ...(run && run.nextActionAt > Date.now() ? { nextActionAt: run.nextActionAt } : {}),
     }
   }
 
@@ -253,16 +292,36 @@ export class AutomationService {
     const start = this.timeMinutes(settings.startTime), end = this.timeMinutes(settings.endTime)
     if (start === null || end === null || start >= end) throw new ChatError('Giờ bắt đầu phải sớm hơn giờ kết thúc trong cùng một ngày.')
     if (!Number.isInteger(settings.delaySeconds) || settings.delaySeconds < 5 || settings.delaySeconds > 3600) throw new ChatError('Delay giữa các lượt phải từ 5 đến 3600 giây.')
+    const dailyLimit = settings.dailyLimit ?? 130
+    if (!Number.isInteger(dailyLimit) || dailyLimit < 1 || dailyLimit > 10000) throw new ChatError('Giới hạn gửi trong ngày phải từ 1 đến 10000 tin nhắn.')
     if (settings.pauseEvery !== 2 || settings.pauseSeconds !== 60) throw new ChatError('Cấu hình nghỉ hiện tại là sau 2 lượt gửi thành công, nghỉ 60 giây.')
     const normalized = [...new Set(phoneList.flatMap(value => phones(value)))]
     if (!normalized.length) throw new ChatError('Chưa có số điện thoại Việt Nam hợp lệ.')
     if (normalized.length > 1000) throw new ChatError('Mỗi lượt hỗ trợ tối đa 1000 số điện thoại.')
     this.accounts.getMessaging(settings.accountId)
-    return { settings: { ...settings, message: settings.message.trim() }, normalized }
+    return { settings: { ...settings, dailyLimit, message: settings.message.trim() }, normalized }
   }
 
-  createBulk(settings: BulkMessageSettings, phoneList: string[]) {
-    const validated = this.validateBulk(settings, phoneList)
+  private validateBulkImage(image?: BulkMessageImageUpload) {
+    if (!image) return undefined
+    if (typeof image.name !== 'string' || typeof image.mimeType !== 'string' || typeof image.base64 !== 'string' || image.base64.length > Math.ceil(10 * 1024 * 1024 * 4 / 3) + 8 || !/^[A-Za-z0-9+/]*={0,2}$/.test(image.base64)) throw new ChatError('Ảnh đính kèm không hợp lệ.')
+    const name = [...image.name].map(character => character.charCodeAt(0) < 32 || /[\\/:*?"<>|]/.test(character) ? '_' : character).join('').slice(-180)
+    const extension = /\.([^.]+)$/.exec(name)?.[1]?.toLowerCase()
+    const expectedMime: Record<string, string> = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp' }
+    if (!extension || expectedMime[extension] !== image.mimeType) throw new ChatError('Chỉ hỗ trợ ảnh PNG, JPG, GIF hoặc WebP.')
+    const data = Buffer.from(image.base64, 'base64')
+    if (!data.length || data.length > 10 * 1024 * 1024 || data.toString('base64').replace(/=+$/, '') !== image.base64.replace(/=+$/, '')) throw new ChatError('Ảnh phải có dung lượng từ 1 byte đến 10 MB.', 413)
+    const png = data.length >= 8 && data.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))
+    const jpeg = data.length >= 3 && data[0] === 0xff && data[1] === 0xd8 && data[2] === 0xff
+    const gif = data.length >= 6 && ['GIF87a', 'GIF89a'].includes(data.subarray(0, 6).toString('ascii'))
+    const webp = data.length >= 12 && data.subarray(0, 4).toString('ascii') === 'RIFF' && data.subarray(8, 12).toString('ascii') === 'WEBP'
+    if (!(png || jpeg || gif || webp) || (extension === 'png' && !png) || (['jpg', 'jpeg'].includes(extension) && !jpeg) || (extension === 'gif' && !gif) || (extension === 'webp' && !webp)) throw new ChatError('Tệp không phải ảnh hợp lệ hoặc không khớp phần mở rộng.')
+    return { name, mimeType: image.mimeType, base64: image.base64 }
+  }
+
+  createBulk(settings: BulkMessageSettings, phoneList: string[], imageUpload?: BulkMessageImageUpload) {
+    const image = this.validateBulkImage(imageUpload)
+    const validated = this.validateBulk({ ...settings, ...(image ? { image: { name: image.name, mimeType: image.mimeType } } : {}) }, phoneList)
     const now = Date.now()
     const campaign: BulkMessageCampaign = {
       id: randomUUID(),
@@ -273,71 +332,97 @@ export class AutomationService {
       items: validated.normalized.map(phone => ({ id: randomUUID(), phone, status: 'pending', detail: 'Chờ bấm Chạy.' })),
     }
     this.store.saveBulkCampaign(campaign)
+    if (image) this.store.saveBulkImage(campaign.id, image)
+    this.bulkRuns.set(campaign.id, { campaignId: campaign.id, running: false, busy: false, nextActionAt: 0, successCount: 0, pausedReason: 'Chưa chạy' })
+    if (![...this.bulkRuns.values()].some(run => run.running)) this.bulkFocusCampaignId = campaign.id
+    return this.bulkSnapshot()
+  }
+
+  updateBulkCampaign(id: string, settings: BulkMessageSettings, imageUpload?: BulkMessageImageUpload, removeImage = false) {
+    const campaign = this.store.bulkCampaign(id)
+    if (!campaign) throw new ChatError('Không tìm thấy cấu hình gửi tin.', 404)
+    const run = this.bulkRuns.get(id)
+    if (campaign.state === 'running' || run?.running || run?.busy) throw new ChatError('Hãy dừng chiến dịch và chờ lượt hiện tại hoàn tất trước khi chỉnh sửa.', 409)
+    const image = this.validateBulkImage(imageUpload)
+    const validated = this.validateBulk({ ...settings, image: image ? { name: image.name, mimeType: image.mimeType } : removeImage ? undefined : campaign.settings.image }, campaign.items.map(item => item.phone))
+    const dailyLimitChanged = (campaign.settings.dailyLimit ?? 130) !== (validated.settings.dailyLimit ?? 130)
+    const updated: BulkMessageCampaign = { ...campaign, updatedAt: Date.now(), settings: validated.settings, ...(dailyLimitChanged ? { dailyResumeAt: undefined } : {}) }
+    this.store.saveBulkCampaign(updated)
+    if (image) this.store.saveBulkImage(id, image)
+    else if (removeImage) this.store.deleteBulkImage(id)
+    if (run && dailyLimitChanged) { run.nextActionAt = 0; run.pausedReason = 'Đã cập nhật giới hạn gửi trong ngày.' }
     return this.bulkSnapshot()
   }
 
   startBulk(id: string) {
-    if (this.bulkRunning || this.bulkBusy) throw new ChatError('Một chiến dịch đang chạy. Hãy dừng chiến dịch hiện tại trước.', 409)
     const campaign = this.store.bulkCampaign(id)
     if (!campaign) throw new ChatError('Không tìm thấy cấu hình gửi tin.', 404)
+    const currentRun = this.bulkRuns.get(id)
+    if (currentRun?.running || currentRun?.busy) throw new ChatError('Chiến dịch này đang chạy hoặc đang hoàn tất một lượt gửi.', 409)
     if (!campaign.items.some(item => item.status === 'pending')) throw new ChatError('Cấu hình này không còn số nào đang chờ gửi.', 409)
+    const failedItem = campaign.items.find(item => item.status === 'error')
+    if (failedItem) throw new ChatError(`Chiến dịch đang có lỗi tại số ${failedItem.phone}. Hãy xử lý số lỗi trước khi chạy tiếp để không bỏ qua số này.`, 409)
+    this.assertBulkAccountAvailable(id, campaign.settings.accountId)
     this.accounts.getMessaging(campaign.settings.accountId)
-    this.bulkCampaignId = campaign.id
-    this.bulkSettings = campaign.settings
-    this.bulkItems = campaign.items.map(item => item.status === 'pending' ? { ...item, detail: 'Đã vào hàng chờ gửi.' } : item)
-    this.bulkRunning = true
-    this.bulkBusy = false
-    this.bulkNextActionAt = 0
-    this.bulkSuccessCount = 0
-    this.bulkPausedReason = ''
-    this.saveActiveBulk('running')
-    void this.tickBulk()
+    this.store.saveBulkCampaign({ ...campaign, updatedAt: Date.now(), state: 'running', items: campaign.items.map(item => item.status === 'pending' ? { ...item, detail: item.retryAt ? item.detail : 'Đã vào hàng chờ gửi.' } : item) })
+    this.bulkRuns.set(id, { campaignId: id, running: true, busy: false, nextActionAt: 0, successCount: 0, pausedReason: '' })
+    this.bulkFocusCampaignId = id
+    void this.tickBulk(id)
     return this.bulkSnapshot()
   }
 
   retryBulkFailed(id?: string) {
-    if (this.bulkRunning || this.bulkBusy) throw new ChatError('Một chiến dịch đang chạy. Hãy dừng chiến dịch hiện tại trước.', 409)
-    const campaignId = id || this.bulkCampaignId
+    const campaignId = id || this.bulkFocusCampaignId
     if (!campaignId) throw new ChatError('Không tìm thấy chiến dịch để gửi lại.', 404)
     const campaign = this.store.bulkCampaign(campaignId)
     if (!campaign) throw new ChatError('Không tìm thấy cấu hình gửi tin.', 404)
+    const currentRun = this.bulkRuns.get(campaignId)
+    if (currentRun?.running || currentRun?.busy) throw new ChatError('Chiến dịch này đang chạy hoặc đang hoàn tất một lượt gửi.', 409)
     const failed = campaign.items.filter(item => item.status === 'error')
     if (!failed.length) throw new ChatError('Chiến dịch này không có số lỗi để gửi lại.', 409)
+    this.assertBulkAccountAvailable(campaignId, campaign.settings.accountId)
     this.accounts.getMessaging(campaign.settings.accountId)
-    this.bulkCampaignId = campaign.id
-    this.bulkSettings = campaign.settings
-    this.bulkItems = campaign.items.map(item => item.status === 'error'
-      ? { ...item, status: 'pending' as const, detail: 'Đã vào hàng chờ gửi lại.', sentAt: undefined }
-      : item)
-    this.bulkRunning = true
-    this.bulkBusy = false
-    this.bulkNextActionAt = 0
-    this.bulkSuccessCount = 0
-    this.bulkPausedReason = `Đang gửi lại ${failed.length} số đã lỗi.`
-    this.saveActiveBulk('running')
-    void this.tickBulk()
+    const items = campaign.items.map(item => {
+      if (item.status !== 'error') return item
+      const isLookupFailure = isLookupFailureDetail(item.detail)
+      const retryCount = isLookupFailure ? (item.retryCount ?? 0) + 1 : undefined
+      const retryAt = isLookupFailure
+        ? retryAtFromLookupDetail(item.detail) ?? Date.now() + lookupRetryDelay(retryCount ?? 1)
+        : undefined
+      const detail = isLookupFailure
+        ? `Đang chờ thử lại đúng số này${retryAt ? ` lúc ${vietnamTime(retryAt)} (giờ Việt Nam)` : ''}. ${item.detail}`
+        : `Đã đưa số này vào hàng chờ gửi lại theo yêu cầu. ${item.detail}`
+      return { ...item, status: 'pending' as const, detail, retryAt, retryCount, sentAt: undefined }
+    })
+    this.store.saveBulkCampaign({ ...campaign, updatedAt: Date.now(), state: 'running', items })
+    this.bulkRuns.set(campaignId, { campaignId, running: true, busy: false, nextActionAt: 0, successCount: 0, pausedReason: `Đang gửi lại ${failed.length} số đã lỗi.` })
+    this.bulkFocusCampaignId = campaignId
+    void this.tickBulk(campaignId)
     return this.bulkSnapshot()
   }
 
   stopBulk(id?: string) {
-    if (id && this.bulkCampaignId && id !== this.bulkCampaignId) throw new ChatError('Chiến dịch này không phải chiến dịch đang chạy.', 409)
-    this.bulkRunning = false
-    this.bulkPausedReason = 'Đã dừng thủ công. Nếu đang gửi một tin, lệnh đã gửi tới Zalo có thể vẫn hoàn tất.'
-    this.saveActiveBulk('stopped')
+    const campaignId = id ?? this.store.bulkCampaigns().find(campaign => campaign.state === 'running')?.id
+    if (!campaignId) throw new ChatError('Không tìm thấy chiến dịch đang chạy.', 404)
+    const run = this.bulkRuns.get(campaignId)
+    if (!run?.running) throw new ChatError('Chiến dịch này không chạy.', 409)
+    run.running = false
+    run.pausedReason = 'Đã dừng thủ công. Nếu đang gửi một tin, lệnh đã gửi tới Zalo có thể vẫn hoàn tất.'
+    this.saveBulkRun(run, 'stopped')
+    this.bulkFocusCampaignId = campaignId
     return this.bulkSnapshot()
   }
 
-  private saveActiveBulk(state: BulkMessageCampaign['state']) {
-    if (!this.bulkCampaignId || !this.bulkSettings) return
-    const previous = this.store.bulkCampaign(this.bulkCampaignId)
-    this.store.saveBulkCampaign({
-      id: this.bulkCampaignId,
-      createdAt: previous?.createdAt ?? Date.now(),
-      updatedAt: Date.now(),
-      state,
-      settings: this.bulkSettings,
-      items: this.bulkItems,
-    })
+  private assertBulkAccountAvailable(campaignId: string, accountId: string) {
+    const conflict = this.store.bulkCampaigns().find(campaign => campaign.id !== campaignId && campaign.settings.accountId === accountId
+      && (campaign.state === 'running' || this.bulkRuns.get(campaign.id)?.busy))
+    if (conflict) throw new ChatError('Tài khoản này đang chạy một chiến dịch khác. Chọn tài khoản khác để chạy song song.', 409)
+  }
+
+  private saveBulkRun(run: BulkRunState, state: BulkMessageCampaign['state']) {
+    const campaign = this.store.bulkCampaign(run.campaignId)
+    if (!campaign) return
+    this.store.saveBulkCampaign({ ...campaign, updatedAt: Date.now(), state })
   }
 
   private timeMinutes(value: string) {
@@ -354,82 +439,169 @@ export class AutomationService {
     return withinVietnamTimeWindow(start, end, now)
   }
 
-  private updateBulkItem(id: string, update: Partial<BulkMessageItem>) {
-    this.bulkItems = this.bulkItems.map(item => item.id === id ? { ...item, ...update } : item)
-    this.saveActiveBulk(this.bulkRunning ? 'running' : 'stopped')
+  private sentToday(campaign: BulkMessageCampaign, now: number) {
+    const shifted = new Date(now + VIETNAM_OFFSET_MS)
+    const todayStart = Date.UTC(shifted.getUTCFullYear(), shifted.getUTCMonth(), shifted.getUTCDate()) - VIETNAM_OFFSET_MS
+    return campaign.items.filter(item => item.status === 'sent' && (item.sentAt ?? 0) >= todayStart && (item.sentAt ?? 0) < todayStart + DAY_MS).length
   }
 
-  private async tickBulk() {
-    if (!this.bulkRunning || this.bulkBusy || !this.bulkSettings) return
-    if (this.busy) { this.bulkPausedReason = 'Đang chờ thao tác trực nhóm hoàn tất.'; return }
-    const next = this.bulkItems.find(item => item.status === 'pending')
+  private nextVietnamStartAt(startTime: string, now: number) {
+    const shifted = new Date(now + VIETNAM_OFFSET_MS)
+    const [hour, minute] = startTime.split(':').map(Number)
+    let resumeAt = Date.UTC(shifted.getUTCFullYear(), shifted.getUTCMonth(), shifted.getUTCDate(), hour, minute) - VIETNAM_OFFSET_MS
+    if (resumeAt <= now) resumeAt += DAY_MS
+    return resumeAt
+  }
+
+  private updateBulkItem(run: BulkRunState, id: string, update: Partial<BulkMessageItem>) {
+    const campaign = this.store.bulkCampaign(run.campaignId)
+    if (!campaign) return
+    this.store.saveBulkCampaign({
+      ...campaign,
+      updatedAt: Date.now(),
+      state: run.running ? 'running' : 'stopped',
+      items: campaign.items.map(item => item.id === id ? { ...item, ...update } : item),
+    })
+  }
+
+  private async tickBulk(campaignId?: string) {
+    const runs = campaignId
+      ? [this.bulkRuns.get(campaignId)].filter((run): run is BulkRunState => Boolean(run))
+      : [...this.bulkRuns.values()]
+    await Promise.all(runs.map(run => this.tickBulkCampaign(run)))
+  }
+
+  private async tickBulkCampaign(run: BulkRunState) {
+    if (!run.running || run.busy) return
+    if (this.busy) { run.pausedReason = 'Đang chờ thao tác trực nhóm hoàn tất.'; return }
+    const campaign = this.store.bulkCampaign(run.campaignId)
+    if (!campaign) { run.running = false; return }
+    const failedItem = campaign.items.find(item => item.status === 'error')
+    if (failedItem) {
+      run.running = false
+      run.pausedReason = `Đã dừng tại số lỗi ${failedItem.phone}. Hãy xử lý số này trước khi tiếp tục.`
+      this.saveBulkRun(run, 'stopped')
+      return
+    }
+    const next = campaign.items.find(item => item.status === 'pending')
     if (!next) {
-      this.bulkRunning = false
-      this.bulkPausedReason = 'Đã xử lý xong danh sách.'
-      this.saveActiveBulk('completed')
+      run.running = false
+      run.pausedReason = 'Đã xử lý xong danh sách.'
+      this.saveBulkRun(run, 'completed')
       return
     }
-    if (!this.withinBulkWindow(this.bulkSettings)) {
-      this.bulkPausedReason = `Ngoài khung giờ ${this.bulkSettings.startTime}–${this.bulkSettings.endTime} (giờ Việt Nam).`
+    const now = this.bulkClock().getTime()
+    const dailyLimit = campaign.settings.dailyLimit ?? 130
+    const sentToday = this.sentToday(campaign, now)
+    if (sentToday >= dailyLimit) {
+      const resumeAt = campaign.dailyResumeAt && campaign.dailyResumeAt > now ? campaign.dailyResumeAt : this.nextVietnamStartAt(campaign.settings.startTime, now)
+      if (campaign.dailyResumeAt !== resumeAt) this.store.saveBulkCampaign({ ...campaign, updatedAt: Date.now(), dailyResumeAt: resumeAt })
+      run.nextActionAt = Math.max(run.nextActionAt, resumeAt)
+      run.pausedReason = `Đã đạt giới hạn ${dailyLimit} tin gửi thành công hôm nay. ${campaign.items.filter(item => item.status === 'pending').length} số còn lại sẽ tiếp tục lúc ${vietnamTime(resumeAt)} ngày mai (giờ Việt Nam).`
       return
     }
-    if (Date.now() < this.bulkNextActionAt) {
-      this.bulkPausedReason = 'Đang chờ theo giới hạn tốc độ.'
+    if (campaign.dailyResumeAt) {
+      this.store.saveBulkCampaign({ ...campaign, updatedAt: Date.now(), dailyResumeAt: undefined })
+      if (run.nextActionAt === campaign.dailyResumeAt) run.nextActionAt = 0
+    }
+    if (!this.withinBulkWindow(campaign.settings)) {
+      run.pausedReason = `Ngoài khung giờ ${campaign.settings.startTime}–${campaign.settings.endTime} (giờ Việt Nam).`
       return
     }
-    this.bulkPausedReason = ''
+    if (next.retryAt && Date.now() < next.retryAt) {
+      run.nextActionAt = Math.max(run.nextActionAt, next.retryAt)
+      run.pausedReason = next.detail
+      return
+    }
+    if (Date.now() < run.nextActionAt) {
+      run.pausedReason = 'Đang chờ theo giới hạn tốc độ.'
+      return
+    }
+    if (this.bulkAccountsBusy.has(campaign.settings.accountId)) {
+      run.pausedReason = 'Đang chờ lượt gửi khác trên cùng tài khoản.'
+      return
+    }
+    run.pausedReason = ''
     let chat: MessagingConnection
-    try { chat = this.accounts.getMessaging(this.bulkSettings.accountId) }
+    try { chat = this.accounts.getMessaging(campaign.settings.accountId) }
     catch (cause) {
-      this.bulkPausedReason = cause instanceof Error ? cause.message : 'Tài khoản Zalo chưa kết nối.'
+      run.pausedReason = cause instanceof Error ? cause.message : 'Tài khoản Zalo chưa kết nối.'
       return
     }
     if (chat.status() !== 'connected') {
-      if (['idle', 'disconnected'].includes(chat.status()) && Date.now() - (this.lastReconnect.get(this.bulkSettings.accountId) ?? 0) > 30_000) {
-        this.lastReconnect.set(this.bulkSettings.accountId, Date.now())
+      if (['idle', 'disconnected'].includes(chat.status()) && Date.now() - (this.lastReconnect.get(campaign.settings.accountId) ?? 0) > 30_000) {
+        this.lastReconnect.set(campaign.settings.accountId, Date.now())
         try { chat.reconnect() } catch (cause) {
-          this.bulkPausedReason = cause instanceof Error ? cause.message : 'Không thể kết nối lại Zalo.'
+          run.pausedReason = cause instanceof Error ? cause.message : 'Không thể kết nối lại Zalo.'
           return
         }
       }
-      this.bulkPausedReason = 'Đang chờ tài khoản Zalo kết nối.'
+      run.pausedReason = 'Đang chờ tài khoản Zalo kết nối.'
       return
     }
-    this.bulkBusy = true
-    this.updateBulkItem(next.id, { status: 'searching', detail: 'Đang tìm tài khoản Zalo theo số điện thoại.' })
+
+    run.busy = true
+    this.bulkAccountsBusy.add(campaign.settings.accountId)
+    this.updateBulkItem(run, next.id, { status: 'searching', detail: 'Đang tìm tài khoản Zalo theo số điện thoại.', retryAt: undefined })
     let foundUserName = ''
+    let lookupCompleted = false
     try {
-      const user = await chat.automationFindUser(next.phone, detail => this.updateBulkItem(next.id, { status: 'searching', detail }))
-      if (!this.bulkRunning) {
-        this.updateBulkItem(next.id, { status: 'pending', detail: `Đã dừng sau khi tìm thấy ${user.name || 'tài khoản Zalo'}; chưa gửi tin. Có thể chạy tiếp.` })
+      const user = await chat.automationFindUser(next.phone, detail => this.updateBulkItem(run, next.id, { status: 'searching', detail }))
+      lookupCompleted = true
+      if (!run.running) {
+        this.updateBulkItem(run, next.id, { status: 'pending', detail: `Đã dừng sau khi tìm thấy ${user.name || 'tài khoản Zalo'}; chưa gửi tin. Có thể chạy tiếp.` })
         return
       }
       foundUserName = user.name
-      this.updateBulkItem(next.id, { status: 'sending', detail: `Đã tìm thấy ${user.name || 'tài khoản Zalo'}, đang gửi tin.`, name: user.name })
-      await chat.automationSendMessage(user.id, this.bulkSettings.message)
+      this.updateBulkItem(run, next.id, { status: 'sending', detail: `Đã tìm thấy ${user.name || 'tài khoản Zalo'}, đang gửi tin.`, name: user.name, retryCount: undefined })
+      const image = this.store.bulkImage(campaign.id)
+      await chat.automationSendMessage(user.id, campaign.settings.message, image ? { name: image.name, base64: image.base64 } : undefined)
       const sentAt = Date.now()
-      this.updateBulkItem(next.id, { status: 'sent', detail: 'Zalo đã xử lý lệnh gửi tin nhắn thành công.', name: user.name, sentAt })
-      this.bulkSuccessCount += 1
-      if (this.bulkSuccessCount >= this.bulkSettings.pauseEvery) {
-        this.bulkSuccessCount = 0
-        this.bulkNextActionAt = sentAt + this.bulkSettings.pauseSeconds * 1000
-        this.bulkPausedReason = `Đã gửi ${this.bulkSettings.pauseEvery} lượt liên tiếp. Nghỉ ${this.bulkSettings.pauseSeconds} giây.`
+      this.updateBulkItem(run, next.id, { status: 'sent', detail: 'Zalo đã xử lý lệnh gửi tin nhắn thành công.', name: user.name, sentAt, retryAt: undefined, retryCount: undefined })
+      run.successCount += 1
+      if (run.successCount >= campaign.settings.pauseEvery) {
+        run.successCount = 0
+        run.nextActionAt = sentAt + campaign.settings.pauseSeconds * 1000
+        run.pausedReason = `Đã gửi ${campaign.settings.pauseEvery} lượt liên tiếp. Nghỉ ${campaign.settings.pauseSeconds} giây.`
       } else {
-        this.bulkNextActionAt = sentAt + this.bulkSettings.delaySeconds * 1000
+        run.nextActionAt = sentAt + campaign.settings.delaySeconds * 1000
       }
     } catch (cause) {
       const reason = cause instanceof Error ? cause.message : 'Không xử lý được số điện thoại này.'
-      const detail = foundUserName ? `Đã tìm thấy ${foundUserName}, nhưng gửi tin thất bại: ${reason}` : reason
-      this.updateBulkItem(next.id, { status: 'error', detail })
-      this.bulkSuccessCount = 0
-      this.bulkNextActionAt = Date.now() + this.bulkSettings.delaySeconds * 1000
+      if (!lookupCompleted) {
+        const retryCount = (next.retryCount ?? 0) + 1
+        const retryAt = cause instanceof ZaloLookupRateLimitError ? cause.retryAt : Date.now() + lookupRetryDelay(retryCount)
+        const time = vietnamTime(retryAt)
+        const detail = cause instanceof ZaloLookupRateLimitError
+          ? `${reason} Giữ nguyên số này và tự tra cứu lại lúc ${time} (giờ Việt Nam).`
+          : `Tra cứu số này chưa thành công: ${reason} Giữ nguyên số và tự thử lại lúc ${time} (giờ Việt Nam).`
+        this.updateBulkItem(run, next.id, { status: 'pending', detail, retryAt, retryCount })
+        run.nextActionAt = retryAt
+        run.pausedReason = `Đang chờ tra cứu lại ${next.phone} lúc ${time} (giờ Việt Nam).`
+      } else {
+        const detail = `Đã tìm thấy ${foundUserName || 'tài khoản Zalo'}, nhưng gửi tin thất bại: ${reason} Đã dừng tại số này để không chuyển sang số kế tiếp. Kiểm tra Zalo trước khi gửi lại.`
+        this.updateBulkItem(run, next.id, { status: 'error', detail })
+        run.successCount = 0
+        run.running = false
+        run.pausedReason = `Đã dừng tại ${next.phone} do gửi tin chưa được xác nhận. Kiểm tra Zalo trước khi tiếp tục.`
+        this.saveBulkRun(run, 'stopped')
+      }
     } finally {
-      this.bulkBusy = false
+      run.busy = false
+      this.bulkAccountsBusy.delete(campaign.settings.accountId)
+      if (run.running) {
+        const latest = this.store.bulkCampaign(run.campaignId)
+        if (!latest?.items.some(item => item.status === 'pending' || item.status === 'searching' || item.status === 'sending')) {
+          run.running = false
+          run.pausedReason = 'Đã xử lý xong danh sách.'
+          this.saveBulkRun(run, 'completed')
+        }
+      }
     }
   }
   async close() {
     this.closed = true; clearInterval(this.timer); this.bindings.forEach(binding => binding.unsubscribe())
     // Keep the database open for any acknowledgement already in flight; process exit closes it.
-    if (!this.busy && !this.bulkBusy) this.store.close()
+    if (!this.busy && ![...this.bulkRuns.values()].some(run => run.busy)) this.store.close()
   }
 }

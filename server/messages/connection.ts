@@ -6,8 +6,9 @@ import { Reactions, ThreadType } from 'zalo-api-final'
 import type { API, Message, SendMessageQuote } from 'zalo-api-final'
 import type { ChatConnectionStatus, ChatMessage, Conversation, ConversationType, PhoneSyncState, SendChatInput, MessageAction } from '../../shared/messages.ts'
 import { CHAT_REACTIONS, MAX_ATTACHMENT_BYTES, MAX_MESSAGE_LENGTH } from '../../shared/messages.ts'
-import { ChatError } from './types.ts'
+import { ChatError, ZaloLookupRateLimitError } from './types.ts'
 import type { FriendContact, MessagingConnection } from './types.ts'
+import { lookupRateLimitRetryAt } from '../automation/lookup-policy.ts'
 import { normalizeMessage, safeMediaUrl } from './normalize.ts'
 import { readDocumentsHistory } from './documents-history.ts'
 import { UnreadStore } from './unread-store.ts'
@@ -152,6 +153,12 @@ export class ZaloMessagingConnection implements MessagingConnection {
           return { id: user.uid, name, avatar }
         } catch (cause) {
           const code = typeof cause === 'object' && cause !== null && 'code' in cause && typeof cause.code === 'number' ? cause.code : null
+          if (code === 312 || code === 313) {
+            const message = cause instanceof Error ? cause.message : ''
+            const limitCode = code === 312 ? 312 : 313
+            const retryAt = lookupRateLimitRetryAt(limitCode, message)
+            throw new ZaloLookupRateLimitError(`Zalo đang giới hạn tra cứu số điện thoại (mã ${code}). ${message}`.trim(), limitCode, retryAt)
+          }
           if (code === 216) {
             emptyResponse = true
             break
@@ -173,11 +180,28 @@ export class ZaloMessagingConnection implements MessagingConnection {
     if (emptyResponse) throw new ChatError('Zalo đã phản hồi nhưng không trả về UID hợp lệ cho số này (mã 216 hoặc không tìm thấy tài khoản).', 404)
     throw new ChatError('Không tra cứu được tài khoản Zalo cho số này.', 502)
   }
-  async automationSendMessage(contactId: string, text: string) {
+  async automationSendMessage(contactId: string, text: string, attachment?: { name: string; base64: string }) {
     this.requireAutomationConnection(contactId)
-    if (typeof text !== 'string' || !text.trim() || text.length > MAX_MESSAGE_LENGTH) throw new ChatError('Nội dung tin nhắn không hợp lệ.')
+    if (typeof text !== 'string' || text.length > MAX_MESSAGE_LENGTH || (!text.trim() && !attachment)) throw new ChatError('Nội dung tin nhắn không hợp lệ.')
+    let source: { name: string; data: Buffer } | undefined
+    if (attachment) {
+      if (typeof attachment.name !== 'string' || typeof attachment.base64 !== 'string' || !/^[A-Za-z0-9+/]*={0,2}$/.test(attachment.base64)) throw new ChatError('Ảnh đính kèm không hợp lệ.')
+      const data = Buffer.from(attachment.base64, 'base64')
+      if (!data.length || data.length > MAX_ATTACHMENT_BYTES) throw new ChatError('Ảnh phải có dung lượng từ 1 byte đến 10 MB.', 413)
+      const name = [...attachment.name].map(character => character.charCodeAt(0) < 32 || /[\\/:*?"<>|]/.test(character) ? '_' : character).join('').slice(-180)
+      if (!/\.(png|jpe?g|gif|webp)$/i.test(name)) throw new ChatError('Chỉ hỗ trợ ảnh PNG, JPG, GIF hoặc WebP.')
+      source = { name, data }
+    }
+    let directory: string | undefined
+    let file: string | undefined
     try {
-      const response = await this.api.sendMessage({ msg: text }, contactId, ThreadType.User)
+      if (source) {
+        directory = await mkdtemp(path.join(tmpdir(), 'zalo-bulk-image-'))
+        file = path.join(directory, source.name)
+        await writeFile(file, source.data, { mode: 0o600 })
+      }
+      const response = await this.api.sendMessage({ msg: text, attachments: file }, contactId, ThreadType.User)
+      if (!response.message && response.attachment.length === 0) throw new Error('No acknowledgement')
       if (!this.disposed && response.message) {
         const conversation = this.threads.get(keyOf('personal', contactId))
         this.remember({
@@ -190,6 +214,9 @@ export class ZaloMessagingConnection implements MessagingConnection {
       if (cause instanceof ChatError) throw cause
       const reason = cause instanceof Error && cause.message ? `: ${cause.message}` : ''
       throw new ChatError(`Zalo từ chối hoặc không gửi được tin nhắn${reason}`, 502)
+    } finally {
+      if (file) await unlink(file).catch(() => undefined)
+      if (directory) await rmdir(directory).catch(() => undefined)
     }
   }
   openPersonal(contactId: string, name: string) {
