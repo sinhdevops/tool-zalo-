@@ -165,6 +165,7 @@ export default function BulkMessagePage() {
             {data.campaigns.map(campaign => {
               const sent = campaign.items.filter(item => item.status === 'sent').length
               const failed = campaign.items.filter(item => item.status === 'error').length
+              const hasPending = campaign.items.some(item => item.status === 'pending')
               const isActive = campaign.state === 'running'
               const accountBusy = data.campaigns.some(other => other.id !== campaign.id && other.settings.accountId === campaign.settings.accountId && other.state === 'running')
               const itemInFlight = campaign.items.some(item => item.status === 'searching' || item.status === 'sending')
@@ -182,7 +183,10 @@ export default function BulkMessagePage() {
                     : itemInFlight
                       ? <button className="auto-button" disabled>Đang hoàn tất lượt gửi</button>
                       : failed > 0
-                        ? <button className="auto-button" disabled={busy || accountBusy} onClick={() => void retryFailed(campaign.id)}><FiRefreshCw /> Gửi lại lỗi</button>
+                        ? <>
+                            {hasPending && <button className="auto-button primary" disabled={busy || accountBusy} onClick={() => void runCampaign(campaign.id)}><FiPlay /> Tiếp tục</button>}
+                            <button className="auto-button" disabled={busy || accountBusy} onClick={() => void retryFailed(campaign.id)}><FiRefreshCw /> Gửi lại lỗi</button>
+                          </>
                         : <button className="auto-button primary" disabled={busy || accountBusy || campaign.state === 'completed'} onClick={() => void runCampaign(campaign.id)}><FiPlay /> Chạy</button>}
                   <button className="auto-button" disabled={busy} onClick={() => setDetailsCampaignId(campaign.id)}><FiEye /> Chi tiết</button>
                   <button className="auto-button" disabled={busy || !canEdit} title={!canEdit ? 'Dừng và chờ lượt đang xử lý hoàn tất để chỉnh sửa.' : undefined} onClick={() => openEdit(campaign)}><FiEdit2 /> Chỉnh sửa</button>
@@ -230,6 +234,7 @@ export default function BulkMessagePage() {
       {detailsCampaign && <Modal title={`Kết quả từng số · ${detailsCampaign.items.length} số`} onClose={() => setDetailsCampaignId(null)}>
         <div className="bulk-detail-modal">
           <div className="bulk-detail-summary"><span>{accounts.find(account => account.id === detailsCampaign.settings.accountId)?.displayName || detailsCampaign.settings.accountId}</span><span>{campaignStateLabels[detailsCampaign.state]}</span><span>{detailsCampaign.items.filter(item => item.status === 'sent').length} đã gửi</span><span>{detailsCampaign.items.filter(item => item.status === 'error').length} lỗi</span></div>
+          {detailsCampaign.state !== 'running' && detailsCampaign.items.some(item => item.status === 'pending') && <button className="auto-button primary" disabled={busy} onClick={() => void runCampaign(detailsCampaign.id)}><FiPlay /> Tiếp tục số đang chờ</button>}
           {detailsCampaign.items.some(item => item.status === 'error') && detailsCampaign.state !== 'running' && <button className="auto-button" disabled={busy} onClick={() => void retryFailed(detailsCampaign.id)}><FiRefreshCw /> Gửi lại số lỗi</button>}
           {!detailsCampaign.items.length ? <div className="auto-empty"><FiPhone /><strong>Danh sách chưa có số điện thoại</strong></div> :
             <div className="auto-table-scroll bulk-detail-scroll"><table className="auto-table bulk-table"><thead><tr><th>Số điện thoại</th><th>Tài khoản</th><th>Trạng thái</th><th>Chi tiết</th><th>Thời gian</th></tr></thead><tbody>

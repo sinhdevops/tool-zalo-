@@ -100,6 +100,33 @@ test('a failed lookup retries twice at one-minute intervals, then skips that num
   assert.equal(f.service.bulkSnapshot().running, false)
 })
 
+test('a rejected send marks only that phone as failed and continues after the one-minute delay', async (t) => {
+  let clock = new Date('2026-09-24T05:07:00Z')
+  const f = automationFixture(new AutomationStore(), 0, () => clock)
+  t.after(() => f.service.close())
+  let sendAttempts = 0
+  f.setBulkSend(async () => {
+    sendAttempts += 1
+    if (sendAttempts === 1) throw new Error('Bạn chưa thể gửi tin nhắn đến người này vì người này chưa chấp nhận tin nhắn từ người lạ.')
+  })
+  const id = f.service.createBulk(bulkSettings, ['0900000000', '0380000000']).campaigns[0]!.id
+  f.service.startBulk(id)
+  await f.drain()
+
+  assert.equal(f.service.bulkSnapshot().items[0]?.status, 'error')
+  assert.equal(f.service.bulkSnapshot().items[1]?.status, 'pending')
+  assert.equal(f.service.bulkSnapshot().running, true)
+  assert.match(f.service.bulkSnapshot().items[0]?.detail ?? '', /tiếp tục các số còn lại/)
+
+  clock = new Date(clock.getTime() + BULK_MESSAGE_DELAY_SECONDS * 1000)
+  await f.drain()
+  assert.equal(sendAttempts, 2)
+  assert.equal(f.service.bulkSnapshot().items[1]?.status, 'sent')
+  assert.equal(f.service.bulkSnapshot().sent, 1)
+  assert.equal(f.service.bulkSnapshot().failed, 1)
+  assert.equal(f.service.bulkSnapshot().running, false)
+})
+
 test('retrying a completed bulk campaign sends only failed numbers and keeps sent numbers untouched', async (t) => {
   const store = new AutomationStore()
   store.saveBulkCampaign({

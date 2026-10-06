@@ -570,12 +570,11 @@ export class AutomationService {
           run.pausedReason = `Đã bỏ qua ${next.phone} sau ${BULK_MESSAGE_MAX_LOOKUP_RETRIES} lần thử lại; tiếp tục danh sách.`
         }
       } else {
-        const detail = `Đã tìm thấy ${foundUserName || 'tài khoản Zalo'}, nhưng gửi tin thất bại: ${reason} Đã dừng tại số này để không chuyển sang số kế tiếp. Kiểm tra Zalo trước khi gửi lại.`
+        const detail = `Đã tìm thấy ${foundUserName || 'tài khoản Zalo'}, nhưng gửi tin thất bại: ${reason} Không tự gửi lại số này để tránh gửi trùng; sẽ tiếp tục các số còn lại.`
         this.updateBulkItem(run, next.id, { status: 'error', detail })
         run.successCount = 0
-        run.running = false
-        run.pausedReason = `Đã dừng tại ${next.phone} do gửi tin chưa được xác nhận. Kiểm tra Zalo trước khi tiếp tục.`
-        this.saveBulkRun(run, 'stopped')
+        run.nextActionAt = this.bulkClock().getTime() + BULK_MESSAGE_DELAY_SECONDS * 1000
+        run.pausedReason = `Gửi tới ${next.phone} không thành công; tiếp tục các số còn lại sau ${BULK_MESSAGE_DELAY_SECONDS} giây.`
       }
     } finally {
       run.busy = false
