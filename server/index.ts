@@ -9,6 +9,7 @@ import { UnreadStore } from './messages/unread-store.ts'
 import { AutomationStore } from './automation/store.ts'
 import { AutomationService } from './automation/service.ts'
 import { EncryptedChatStore } from './messages/chat-store.ts'
+import { AdvisorLearningStore } from './advisor/learning-store.ts'
 
 const root = fileURLToPath(new URL('../', import.meta.url))
 const port = Number(process.env.PORT ?? process.env.ACCOUNT_API_PORT ?? 3001)
@@ -22,6 +23,7 @@ if (process.env.RAILWAY_PUBLIC_DOMAIN) allowedHosts.push(process.env.RAILWAY_PUB
 mkdirSync(directory, { recursive: true })
 const unreadStore = new UnreadStore(path.join(directory, 'unread.sqlite'))
 const chatStore = new EncryptedChatStore(directory)
+const advisorLearning = new AdvisorLearningStore(directory)
 const service = new AccountService(new EncryptedAccountStore(directory), createZaloGateway(unreadStore, chatStore))
 try { await service.initialize() }
 catch {
@@ -33,6 +35,7 @@ automation.start()
 const server = createApp(service, port, automation, {
   allowedOrigins,
   allowedHosts,
+  advisorLearning,
 })
 server.listen(port, host, () => console.log(`Account API ready on ${host}:${port}`))
 server.on('error', () => { console.error('Không thể mở Account API. Kiểm tra cổng đang sử dụng.'); service.shutdown(); process.exit(1) })
@@ -44,6 +47,7 @@ function shutdown() {
   service.shutdown()
   unreadStore.close()
   chatStore.close()
+  advisorLearning.close()
   server.close(() => process.exit(0))
   setTimeout(() => process.exit(0), 3000).unref()
 }

@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { FiAlertCircle, FiArrowLeft, FiCheckCircle, FiClock, FiEdit2, FiEye, FiImage, FiMessageSquare, FiPhone, FiPlay, FiPlus, FiRefreshCw, FiSquare, FiX } from 'react-icons/fi'
+import { BULK_MESSAGE_DELAY_SECONDS, BULK_MESSAGE_MAX_LOOKUP_RETRIES, BULK_MESSAGE_PAUSE_EVERY, BULK_MESSAGE_PAUSE_SECONDS } from '../../../shared/automation'
 import type { BulkMessageCampaign, BulkMessageImageUpload } from '../../../shared/automation'
 import { MAX_ATTACHMENT_BYTES } from '../../../shared/messages'
 import Modal from '../../components/common/Modal'
@@ -44,7 +45,7 @@ export default function BulkMessagePage() {
   const [message, setMessage] = useState('')
   const [startTime, setStartTime] = useState('07:00')
   const [endTime, setEndTime] = useState('21:00')
-  const [delaySeconds, setDelaySeconds] = useState(15)
+  const delaySeconds = BULK_MESSAGE_DELAY_SECONDS
   const [dailyLimit, setDailyLimit] = useState(130)
   const [imageFile, setImageFile] = useState<File | null>(null)
   const [removeImage, setRemoveImage] = useState(false)
@@ -60,14 +61,14 @@ export default function BulkMessagePage() {
 
   function openCreate() {
     setEditingCampaignId(null); setAccountId(accounts[0]?.id ?? ''); setPhones(''); setMessage('')
-    setStartTime('07:00'); setEndTime('21:00'); setDelaySeconds(15); setDailyLimit(130)
+    setStartTime('07:00'); setEndTime('21:00'); setDailyLimit(130)
     setImageFile(null); setRemoveImage(false); setActionError(''); setSettingsOpen(true)
   }
 
   function openEdit(campaign: BulkMessageCampaign) {
     setEditingCampaignId(campaign.id); setAccountId(campaign.settings.accountId); setPhones('')
     setMessage(campaign.settings.message); setStartTime(campaign.settings.startTime); setEndTime(campaign.settings.endTime)
-    setDelaySeconds(campaign.settings.delaySeconds); setDailyLimit(campaign.settings.dailyLimit ?? 130)
+    setDailyLimit(campaign.settings.dailyLimit ?? 130)
     setImageFile(null); setRemoveImage(false); setActionError(''); setSettingsOpen(true)
   }
 
@@ -139,9 +140,9 @@ export default function BulkMessagePage() {
           <dl className="auto-detail-config">
             <div><dt>Tiến độ</dt><dd>{progress}% · {data?.pending ?? 0} số còn lại</dd></div>
             <div><dt>Khung giờ (Việt Nam)</dt><dd>{data?.settings ? `${data.settings.startTime}–${data.settings.endTime}` : '07:00–21:00'}</dd></div>
-            <div><dt>Delay mỗi lượt</dt><dd>{data?.settings?.delaySeconds ?? delaySeconds} giây</dd></div>
+            <div><dt>Delay mỗi lượt</dt><dd>{BULK_MESSAGE_DELAY_SECONDS} giây</dd></div>
             <div><dt>Giới hạn mỗi ngày</dt><dd>{data?.settings?.dailyLimit ?? 130} tin gửi thành công</dd></div>
-            <div><dt>Nghỉ định kỳ</dt><dd>Sau 2 lượt thành công · nghỉ 60 giây</dd></div>
+            <div><dt>Nghỉ định kỳ</dt><dd>Sau {BULK_MESSAGE_PAUSE_EVERY} lượt thành công · nghỉ {BULK_MESSAGE_PAUSE_SECONDS} giây</dd></div>
             <div><dt>Hiện tại</dt><dd>{runningStatus}</dd></div>
             {data?.nextActionAt && <div><dt>Lượt tiếp theo</dt><dd>{new Date(data.nextActionAt).toLocaleString('vi-VN')}</dd></div>}
           </dl>
@@ -151,7 +152,7 @@ export default function BulkMessagePage() {
           <div className="auto-detail-card__heading"><div><span>01</span><h2>Luồng xử lý</h2></div></div>
           <ol className="auto-process">
             <li><span>1</span><div><strong>Đọc từng số điện thoại</strong><p>Danh sách nhập theo dạng mỗi dòng một số, tự bỏ số trùng.</p></div></li>
-            <li><span>2</span><div><strong>Tìm và chờ phản hồi Zalo</strong><p>Giữ nguyên số đang lỗi tra cứu và tự thử lại số đó khi có thể gọi lại.</p></div></li>
+            <li><span>2</span><div><strong>Tìm và chờ phản hồi Zalo</strong><p>Tra cứu lỗi sẽ thử lại tối đa {BULK_MESSAGE_MAX_LOOKUP_RETRIES} lần; các số khác vẫn tiếp tục chạy.</p></div></li>
             <li><span>3</span><div><strong>Giữ số còn lại đến ngày sau</strong><p>Đạt giới hạn tin thành công trong ngày thì danh sách chờ đến ngày mai và tự chạy tiếp.</p></div></li>
           </ol>
         </section>
@@ -173,7 +174,7 @@ export default function BulkMessagePage() {
                 <td>{accounts.find(account => account.id === campaign.settings.accountId)?.displayName || campaign.settings.accountId}</td>
                 <td><strong>{campaign.items.length}</strong><small>{sent} đã gửi · {failed} lỗi</small></td>
                 <td className="bulk-campaign-message">{campaign.settings.message}{campaign.settings.image && <small><FiImage /> {campaign.settings.image.name}</small>}</td>
-                <td>{campaign.settings.startTime}–{campaign.settings.endTime}<small>Giờ VN · Delay {campaign.settings.delaySeconds}s · Tối đa {campaign.settings.dailyLimit ?? 130}/ngày</small></td>
+                <td>{campaign.settings.startTime}–{campaign.settings.endTime}<small>Giờ VN · Delay {BULK_MESSAGE_DELAY_SECONDS}s · Tối đa {campaign.settings.dailyLimit ?? 130}/ngày</small></td>
                 <td><span className={`bulk-status ${campaign.state === 'completed' ? 'sent' : campaign.state === 'running' ? 'sending' : ''}`}>{campaignStateLabels[campaign.state]}</span></td>
                 <td><div className="bulk-campaign-actions">
                   {isActive
@@ -214,14 +215,13 @@ export default function BulkMessagePage() {
           <div className="bulk-settings__row">
             <label>Bắt đầu (giờ VN)<input type="time" value={startTime} onChange={event => setStartTime(event.target.value)} required /></label>
             <label>Kết thúc (giờ VN)<input type="time" value={endTime} onChange={event => setEndTime(event.target.value)} required /></label>
-            <label>Delay (giây)<input type="number" min={5} max={3600} value={delaySeconds} onChange={event => setDelaySeconds(Number(event.target.value))} required /></label>
           </div>
           <label>Giới hạn tin gửi thành công mỗi ngày
             <input type="number" min={1} max={10000} value={dailyLimit} onChange={event => setDailyLimit(Number(event.target.value))} required />
             <small>Đạt giới hạn thì giữ các số còn lại trong danh sách, ngày mai tự chạy tiếp từ giờ bắt đầu.</small>
           </label>
           {editingCampaignId && <div className="auto-note">Các số và kết quả hiện có được giữ nguyên. Nội dung và ảnh mới áp dụng cho các số còn chờ gửi.</div>}
-          {!editingCampaignId && <div className="auto-note">Tạo cấu hình chỉ lưu vào danh sách, chưa gửi tin. Sau mỗi 2 tin gửi thành công liên tiếp, tool nghỉ 60 giây.</div>}
+          {!editingCampaignId && <div className="auto-note">Tạo cấu hình chỉ lưu vào danh sách, chưa gửi tin. Mỗi tin cách nhau {BULK_MESSAGE_DELAY_SECONDS} giây; sau {BULK_MESSAGE_PAUSE_EVERY} tin gửi thành công liên tiếp, tool nghỉ {BULK_MESSAGE_PAUSE_SECONDS} giây.</div>}
           {actionError && <p className="auto-error" role="alert">{actionError}</p>}
           <div className="auto-actions"><button type="button" className="auto-button" disabled={busy} onClick={() => setSettingsOpen(false)}>Hủy</button><button className="auto-button primary" disabled={busy || !selectedAccountId}><FiPlus /> {busy ? 'Đang lưu…' : editingCampaignId ? 'Lưu chỉnh sửa' : 'Tạo cấu hình'}</button></div>
         </form>

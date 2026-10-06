@@ -9,6 +9,8 @@ import { installationAdvice, installationPolicy } from './installation.ts'
 import { openingSequence } from './opening.ts'
 import { adviseConversationContext } from './conversation-context.ts'
 import type { AdvisorInput, Draft, Intent, Knowledge } from './types.ts'
+import { detectIntents } from './nlp/intent-detector.ts'
+import type { AdvisorIntent, BotQuestionKind } from './domain/model.ts'
 
 const patterns: [Intent, RegExp][] = [
   ['stop', /dung nhan|dung lien he|khong nhan tin|dung tu van/],
@@ -23,6 +25,59 @@ const patterns: [Intent, RegExp][] = [
   ['greeting', /^(alo|chao|hello|hi|anh oi|chi oi|em oi)$/],
 ]
 const money = (amount: number) => `${new Intl.NumberFormat('vi-VN').format(amount)}đ`
+
+function botQuestionKind(text: string): BotQuestionKind | undefined {
+  if (/bao nhieu tang|may tang|can phu wifi.*tang/.test(text)) return 'FLOOR_COUNT'
+  if (/loai nha|nha cap 4|phong tro|nha thong thuong/.test(text)) return 'HOUSE_TYPE'
+  if (/dong.*(?:6 thang|1 nam|12 thang)|ky dong|ky thanh toan/.test(text)) return 'PAYMENT_TERM'
+  if (/smart.*hay.*thuong|loai tivi|loai tv/.test(text)) return 'TV_TYPE'
+  if (/dia chi|khu vuc lap|o dau lap/.test(text)) return 'ADDRESS'
+  if (/so dien thoai|sdt|lien he so/.test(text)) return 'PHONE'
+  if (/dinh vi|vi tri tren ban do|location/.test(text)) return 'LOCATION_PIN'
+  if (/cccd|can cuoc/.test(text)) return 'CCCD'
+  if (/cho biet them|noi ro hon|y minh la/.test(text)) return 'CLARIFICATION'
+  return undefined
+}
+
+const semanticIntentMap: Partial<Record<AdvisorIntent, Intent>> = {
+  GREETING: 'greeting',
+  ASK_PRICE: 'price',
+  ASK_PACKAGE: 'recommend',
+  ASK_RECOMMENDATION: 'recommend',
+  ASK_INSTALLATION_FEE: 'fee',
+  ASK_MONTHLY_PAYMENT: 'payment',
+  ASK_6_MONTH: 'payment',
+  ASK_12_MONTH: 'payment',
+  SELECT_PAYMENT: 'payment',
+  HOUSE_NORMAL: 'recommend',
+  HOUSE_ROOM: 'recommend',
+  HOUSE_LEVEL_1: 'recommend',
+  HOUSE_MULTI_FLOOR: 'recommend',
+  PROVIDE_FLOOR_COUNT: 'recommend',
+  NEED_NORMAL_INTERNET: 'recommend',
+  NEED_FAST_INTERNET: 'recommend',
+  ASK_TV: 'recommend',
+  TV_TOO_EXPENSIVE: 'recommend',
+  TV_NORMAL: 'recommend',
+  TV_SMART: 'recommend',
+  ASK_CAMERA: 'recommend',
+  SELECT_PACKAGE: 'signup',
+  PROVIDE_LOCATION: 'recommend',
+  PROVIDE_ADDRESS: 'recommend',
+}
+
+function canonicalizeShortPaymentAnswer(messages: AdvisorInput['messages'], questionKind: BotQuestionKind | undefined, text: string) {
+  if (questionKind !== 'PAYMENT_TERM') return messages
+  const short = normalize(text).replace(/^(?:da |vang )/, '').replace(/(?: a| nhe| nha)$/, '').trim()
+  let replacement: string | undefined
+  if (/^(?:6|sau)(?: thang)?$/.test(short)) replacement = '6 tháng'
+  else if (/^(?:12 thang|1 nam|mot nam|muoi hai thang)$/.test(short)) replacement = '1 năm'
+  else if (/^(?:tung thang|hang thang|1 thang|mot thang)$/.test(short)) replacement = 'đóng từng tháng'
+  if (!replacement) return messages
+  const lastCustomer = messages.findLastIndex(message => message.role === 'customer')
+  if (lastCustomer < 0) return messages
+  return messages.map((message, index) => index === lastCustomer ? { ...message, text: replacement! } : message)
+}
 
 /** Produces a bounded decision summary and a draft. Never sends a message or treats chat text as policy. */
 export function draftAdvice(input: AdvisorInput, knowledge: Knowledge, now = Date.now()): Draft {
@@ -62,6 +117,11 @@ export function draftAdvice(input: AdvisorInput, knowledge: Knowledge, now = Dat
   const mentionedPlans = [...new Set(text.match(/\b(?:netvt|meshvt)\d+\b/g) ?? [])]
   if (mentionedPlans.length === 1 && !/khong|ko|\bk\b|huy|dung|so sanh/.test(text)) facts.plan = mentionedPlans[0]!.toUpperCase()
   result.intent = patterns.filter(([, regex]) => regex.test(text)).map(([intent]) => intent)
+  const questionKind = botQuestionKind(normalize(previousQuestion))
+  const detected = detectIntents(text, { lastBotQuestion: questionKind })
+  if (!result.intent.length) {
+    result.intent = [...new Set(detected.filter(match => match.confidence >= 0.8).map(match => semanticIntentMap[match.intent]).filter((intent): intent is Intent => Boolean(intent)))]
+  }
   if (suppliedHomeAnswer && !result.intent.includes('recommend')) result.intent.push('recommend')
   // A location-only reply continues the question before the bot asked for an address.
   // Carry only commercial intents, never revive old payments/complaints or old send actions.
@@ -92,7 +152,8 @@ export function draftAdvice(input: AdvisorInput, knowledge: Knowledge, now = Dat
   }
   if (mentionedPlans.length > 1) return finish('handoff', 'plan-selection-needs-review', null)
   const billingPlan = facts.plan ?? [...messages].reverse().filter(m => m.role === 'customer').map(m => m.text.match(/(?:lấy|chọn|chốt|đăng ký|đăng kí)\s+(?:gói\s+)?((?:NETVT|MESHVT)\d+)\b/iu)?.[1]).find(Boolean)
-  const billing = adviseBilling(messages, billingPlan)
+  const billingMessages = canonicalizeShortPaymentAnswer(messages, questionKind, pending.map(m => m.text).join(' '))
+  const billing = adviseBilling(billingMessages, billingPlan)
   if (cameraQuestion(text) && !has('payment') && !has('invoice') && !has('schedule')) {
     if (facts.service === 'internet-tv' || /tivi|\btv\b|truyen hinh/.test(text)) return finish('handoff', 'camera-tv-bundle-review', 'Dạ em kiểm tra tổng gói Internet kèm truyền hình và camera cho mình nhé.')
     const camera = cameraAdvice(billingPlan ?? input.closing?.plan, region, knowledge, now, input.closing?.paymentMonths)
@@ -110,7 +171,7 @@ export function draftAdvice(input: AdvisorInput, knowledge: Knowledge, now = Dat
   }
   if (has('payment') || has('invoice')) return finish('handoff', 'payment-or-invoice-needs-record', `Dạ để em kiểm tra thông tin đơn của mình rồi phản hồi ${who} nhé.`)
   if (has('schedule')) return finish('handoff', 'installation-needs-confirmation', `Dạ để em kiểm tra lịch kỹ thuật trước rồi xác nhận lại với ${who} nhé.`)
-  if (/lap(?: dat| mang| wifi)? (?:co )?(?:nhanh|lau|mat bao lau|bao lau|mat may phut|mat bao nhieu phut)/.test(text)) return finish('draft', 'installation-duration', 'Lắp đặt thì tầm 30 phút thôi ạ.')
+  if (detected.some(match => match.intent === 'ASK_INSTALLATION_TIME' && match.confidence >= 0.8) || /lap(?: dat| mang| wifi)? (?:co )?(?:nhanh|lau|mat bao lau|bao lau|mat may phut|mat bao nhieu phut)/.test(text)) return finish('draft', 'installation-duration', 'Lắp đặt thì tầm 30 phút thôi ạ.')
   const tv = adviseTv(messages, facts.service)
   if (tv) {
     result.tvAddon = tv.addon

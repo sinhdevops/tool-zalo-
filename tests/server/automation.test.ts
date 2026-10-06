@@ -7,8 +7,10 @@ import { phones } from '../../server/automation/parse.ts'
 import { AutomationStore } from '../../server/automation/store.ts'
 import { automationFixture, incoming, contact } from '../fixtures/automation.ts'
 import { withinVietnamTimeWindow } from '../../server/automation/service.ts'
+import { BULK_MESSAGE_DELAY_SECONDS, BULK_MESSAGE_LOOKUP_RETRY_DELAY_MS, BULK_MESSAGE_PAUSE_SECONDS } from '../../shared/automation.ts'
 import { createApp } from '../../server/app.ts'
 import type { AccountService } from '../../server/accounts/service.ts'
+import { ZaloLookupRateLimitError } from '../../server/messages/types.ts'
 
 test('Vietnamese phones normalize country prefix and separators, reject dates, UIDs and malformed numbers', () => {
   assert.deepEqual(phones('090 000 0000; +84 900 000 000; 84900000000; 038-000-0000'), ['0900000000', '0380000000'])
@@ -22,7 +24,7 @@ test('bulk schedule uses Vietnam time even when the server uses UTC', () => {
   assert.equal(withinVietnamTimeWindow(start, end, new Date('2026-09-24T14:00:00Z')), false) // 21:00 VN
 })
 
-const bulkSettings = { accountId: '99', message: 'Tin nhắn kiểm thử', startTime: '07:00', endTime: '21:00', delaySeconds: 15, pauseEvery: 2, pauseSeconds: 60 }
+const bulkSettings = { accountId: '99', message: 'Tin nhắn kiểm thử', startTime: '07:00', endTime: '21:00', delaySeconds: BULK_MESSAGE_DELAY_SECONDS, pauseEvery: 2, pauseSeconds: BULK_MESSAGE_PAUSE_SECONDS }
 
 test('starting a bulk campaign searches and sends during Vietnam daytime', async (t) => {
   const f = automationFixture(new AutomationStore(), 0, () => new Date('2026-09-24T05:07:00Z'))
@@ -33,6 +35,67 @@ test('starting a bulk campaign searches and sends during Vietnam daytime', async
   assert.deepEqual(f.calls.filter(call => call.kind === 'find-user' || call.kind === 'bulk-send'), [
     { kind: 'find-user', id: '0900000000' }, { kind: 'bulk-send', id: '123', text: bulkSettings.message },
   ])
+  assert.equal(f.service.bulkSnapshot().sent, 1)
+  assert.equal(f.service.bulkSnapshot().running, false)
+})
+
+test('bulk sending waits one minute between messages and two minutes after two confirmed sends', async (t) => {
+  let clock = new Date('2026-09-24T05:07:00Z')
+  const f = automationFixture(new AutomationStore(), 0, () => clock)
+  t.after(() => f.service.close())
+  const id = f.service.createBulk(bulkSettings, ['0900000000', '0380000000', '0910000000']).campaigns[0]!.id
+  f.service.startBulk(id)
+  await f.drain()
+  assert.equal(f.service.bulkSnapshot().sent, 1)
+
+  clock = new Date(clock.getTime() + BULK_MESSAGE_DELAY_SECONDS * 1000)
+  await f.drain()
+  assert.equal(f.service.bulkSnapshot().sent, 2)
+  assert.equal(f.service.bulkSnapshot().items[2]?.status, 'pending')
+
+  clock = new Date(clock.getTime() + BULK_MESSAGE_PAUSE_SECONDS * 1000 - 1)
+  await f.drain()
+  assert.equal(f.service.bulkSnapshot().sent, 2)
+  clock = new Date(clock.getTime() + 1)
+  await f.drain()
+  assert.equal(f.service.bulkSnapshot().sent, 3)
+  assert.deepEqual(f.calls.filter(call => call.kind === 'find-user' || call.kind === 'bulk-send').map(call => call.kind), [
+    'find-user', 'bulk-send', 'find-user', 'bulk-send', 'find-user', 'bulk-send',
+  ])
+})
+
+test('a failed lookup retries twice at one-minute intervals, then skips that number and continues', async (t) => {
+  let clock = new Date('2026-09-24T05:07:00Z')
+  const f = automationFixture(new AutomationStore(), 0, () => clock)
+  t.after(() => f.service.close())
+  let failedLookups = 0
+  f.setFindUser(async phone => {
+    if (phone === '0900000000') {
+      failedLookups += 1
+      if (failedLookups === 1) throw new ZaloLookupRateLimitError('Zalo tạm giới hạn tra cứu.', 312, clock.getTime() + 60 * 60 * 1000)
+      throw new Error('Không tìm thấy.')
+    }
+    return { id: '123', name: 'Khách thử', avatar: '' }
+  })
+  const id = f.service.createBulk(bulkSettings, ['0900000000', '0380000000']).campaigns[0]!.id
+  f.service.startBulk(id)
+  await f.drain()
+
+  assert.equal(failedLookups, 1)
+  assert.equal(f.findUserRetryLimit(), 0)
+  assert.equal(f.service.bulkSnapshot().items.find(item => item.phone === '0900000000')?.retryCount, 1)
+  assert.equal(f.service.bulkSnapshot().items.find(item => item.phone === '0900000000')?.retryAt, clock.getTime() + BULK_MESSAGE_LOOKUP_RETRY_DELAY_MS)
+  assert.equal(f.service.bulkSnapshot().items.find(item => item.phone === '0380000000')?.status, 'sent')
+  assert.equal(f.service.bulkSnapshot().running, true)
+
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    clock = new Date(clock.getTime() + BULK_MESSAGE_LOOKUP_RETRY_DELAY_MS)
+    await f.drain()
+  }
+  const failed = f.service.bulkSnapshot().items.find(item => item.phone === '0900000000')
+  assert.equal(failedLookups, 3)
+  assert.equal(failed?.status, 'error')
+  assert.match(failed?.detail ?? '', /hết 2 lần thử lại/)
   assert.equal(f.service.bulkSnapshot().sent, 1)
   assert.equal(f.service.bulkSnapshot().running, false)
 })

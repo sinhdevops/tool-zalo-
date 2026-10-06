@@ -23,6 +23,11 @@ export interface AutomationSnapshot { rules?: (AutomationRule & { connection: st
 export const leadStatusLabels: Record<LeadStatus, string> = { waiting: 'Chờ xử lý', queued: 'Chờ chuyển tiếp', friend: 'Dữ liệu cũ', sending: 'Đang chuyển tiếp', sent: 'Đã chuyển tiếp', review: 'Cần kiểm tra' }
 
 export type BulkMessageItemStatus = 'pending' | 'searching' | 'sending' | 'sent' | 'error'
+export const BULK_MESSAGE_DELAY_SECONDS = 60
+export const BULK_MESSAGE_PAUSE_EVERY = 2
+export const BULK_MESSAGE_PAUSE_SECONDS = 120
+export const BULK_MESSAGE_MAX_LOOKUP_RETRIES = 2
+export const BULK_MESSAGE_LOOKUP_RETRY_DELAY_MS = 60_000
 export interface BulkMessageItem {
   id: string
   phone: string

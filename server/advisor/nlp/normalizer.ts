@@ -1,8 +1,11 @@
 import type { NormalizedMessage } from '../domain/model.ts'
 
 const chatReplacements: ReadonlyArray<readonly [RegExp, string]> = [
-  [/\b(?:ko|kh|kg|hong|hông)\b/giu, 'không'],
+  [/\b(?:ko|kh|kg|hong|hông|khum)\b/giu, 'không'],
   [/\bk\b/giu, 'không'],
+  [/(^|\s)bn(?=\s|$)/giu, '$1bao nhiêu'],
+  [/(^|\s)j(?=\s|$)/giu, '$1gì'],
+  [/(^|\s)r(?=\s|$)/giu, '$1rồi'],
   [/(^|\s)(?:dc|đc)(?=\s|$)/giu, '$1được'],
   [/\b(?:bth|bthw)\b/giu, 'bình thường'],
   [/(^|\s)(?:sdt|sđt)(?=\s|$)/giu, '$1số điện thoại'],

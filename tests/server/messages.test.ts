@@ -115,6 +115,14 @@ test('bulk automation retries transient Zalo lookup failures before reporting a 
   assert.equal(f.findUserCallCount(), 3)
 })
 
+test('bulk lookup can disable hidden SDK retries so the campaign owns its two retries', async (t) => {
+  const f = fixture(); t.after(() => f.chat.dispose())
+  f.listener.emit('cipher_key', 'synthetic')
+  f.failFindUser(5)
+  await assert.rejects(f.chat.automationFindUser('0369955757', undefined, 0), /Không nhận được kết quả tra cứu ổn định/)
+  assert.equal(f.findUserCallCount(), 1)
+})
+
 test('My Documents uses the account-specific send2me ID and remains first even without history', async (t) => {
   const a = fixture('555'); const b = fixture('666'); t.after(() => { a.chat.dispose(); b.chat.dispose() })
   assert.deepEqual((await a.chat.list('personal')).conversations[0], { id: '555', type: 'personal', name: 'My Documents', avatar: '', lastMessage: '', updatedAt: 0, isMyDocuments: true, unreadCount: 0 })

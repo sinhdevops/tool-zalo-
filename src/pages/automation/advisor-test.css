@@ -12,4 +12,15 @@
 .advisor-test textarea { min-height: 85px; resize: vertical; }.advisor-test form > div { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 10px; }
 .advisor-test button { background: #2563eb; color: white; border: 0; border-radius: 8px; padding: 11px 16px; cursor: pointer; }.advisor-test button:disabled { opacity: .5; cursor: default; }
 .advisor-test-result { border-top: 1px solid #dbe4ef; margin-top: 20px; font-size: 13px; overflow-wrap: anywhere; }.advisor-test-result img { width: 100%; }.advisor-test-error { color: #b91c1c; }
+.advisor-workspace-tabs { display: flex; gap: 8px; margin: 18px 0 12px; padding: 5px; border: 1px solid #dce5ef; border-radius: 12px; background: #f5f8fc; width: fit-content; max-width: 100%; }
+.advisor-workspace-tabs button { display: flex; align-items: center; gap: 8px; border: 0; border-radius: 8px; padding: 10px 14px; color: #5d7089; background: transparent; font: inherit; font-size: 13px; cursor: pointer; }
+.advisor-workspace-tabs button.active { color: #1f4f96; background: white; box-shadow: 0 1px 4px #183a641c; font-weight: 700; }
+.advisor-correct-trigger { margin-top: 8px; padding: 6px 9px !important; background: #fff !important; color: #38649c !important; border: 1px solid #d7e3f1 !important; font-size: 11px !important; }
+.advisor-correction-form { display: grid; gap: 12px; margin-top: 14px; padding: 15px; border: 1px solid #b7d0ec; border-radius: 12px; background: #f6faff; }
+.advisor-correction-form h2 { margin: 0; color: #234a7e; font-size: 15px; }.advisor-correction-form p { margin: 5px 0 0; color: #647b97; font-size: 12px; }
+.advisor-correction-form label { display: grid; gap: 6px; color: #425d7c; font-size: 12px; font-weight: 700; }
+.advisor-correction-form textarea { box-sizing: border-box; width: 100%; min-height: 70px; padding: 10px; border: 1px solid #ccd9e8; border-radius: 8px; background: white; color: #273e59; font: inherit; font-size: 13px; resize: vertical; }
+.advisor-correction-actions { display: flex; justify-content: flex-end; gap: 8px; }.advisor-correction-actions button[type="submit"] { background: #2864c7; color: white; }
+.advisor-correction-notice { display: flex; align-items: center; gap: 7px; padding: 9px 11px; border-radius: 8px; background: #edf9f2; color: #26704b; font-size: 12px; }
+.advisor-learning-match { padding: 10px; border-radius: 9px; background: #eef7f1; color: #3c7552; font-size: 12px; }
 @media(max-width: 800px) { .advisor-test-layout { grid-template-columns: 1fr; }.advisor-test header { flex-wrap: wrap; }.advisor-test { padding: 12px; } }

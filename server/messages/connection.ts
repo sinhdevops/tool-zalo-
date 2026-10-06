@@ -121,18 +121,19 @@ export class ZaloMessagingConnection implements MessagingConnection {
     }
     return results
   }
-  async automationFindUser(phone: string, onProgress?: (detail: string) => void) {
+  async automationFindUser(phone: string, onProgress?: (detail: string) => void, maxRetries = 2) {
     this.requireAutomationConnection()
     if (!/^0\d{9}$/.test(phone)) throw new ChatError('Số điện thoại không hợp lệ.')
     let lastError: unknown
     let emptyResponse = false
     const context = this.api.getContext()
     // findUser() automatically turns 0xxxxxxxxx into 84xxxxxxxxx for Vietnamese sessions.
-    // Avoid querying the same effective number twice while retaining a country-code fallback elsewhere.
-    const candidates = context.language === 'vi' ? [`84${phone.slice(1)}`] : [phone, `84${phone.slice(1)}`]
+    // Bulk automation lets its queue own retries, so one worker attempt makes one API lookup.
+    const candidates = context.language === 'vi' ? [`84${phone.slice(1)}`] : maxRetries === 0 ? [phone] : [phone, `84${phone.slice(1)}`]
+    const retriesPerCandidate = Math.min(2, Math.max(0, Math.trunc(maxRetries))) + 1
     let attempts = 0
     for (const candidate of [...new Set(candidates)]) {
-      for (let retry = 0; retry < 3; retry += 1) {
+      for (let retry = 0; retry < retriesPerCandidate; retry += 1) {
         attempts += 1
         onProgress?.(`Đang chờ Zalo tra cứu số (lần ${attempts}); chỉ tiếp tục sau khi có phản hồi.`)
         try {
@@ -165,7 +166,7 @@ export class ZaloMessagingConnection implements MessagingConnection {
           }
           lastError = cause
           const transient = code === null || code === 429 || code >= 500
-          if (!transient || retry === 2) break
+          if (!transient || retry === retriesPerCandidate - 1) break
           const waitMs = 1000 * (retry + 1)
           onProgress?.(`Zalo chưa phản hồi ổn định; chờ ${waitMs / 1000} giây rồi thử lại lần ${retry + 2}.`)
           await new Promise<void>((resolve) => setTimeout(resolve, waitMs))
@@ -201,7 +202,7 @@ export class ZaloMessagingConnection implements MessagingConnection {
         await writeFile(file, source.data, { mode: 0o600 })
       }
       const response = await this.api.sendMessage({ msg: text, attachments: file }, contactId, ThreadType.User)
-      if (!response.message && response.attachment.length === 0) throw new Error('No acknowledgement')
+      if (!response || typeof response !== 'object') throw new Error('No response')
       if (!this.disposed && response.message) {
         const conversation = this.threads.get(keyOf('personal', contactId))
         this.remember({

@@ -6,6 +6,7 @@ import { ChatError } from './messages/types.ts'
 import type { AutomationService } from './automation/service.ts'
 import { handleAutomation } from './automation/http.ts'
 import { handleAdvisor } from './advisor/http.ts'
+import type { AdvisorLearningStore } from './advisor/learning-store.ts'
 import { handleFriends } from './friends/http.ts'
 
 function json(response: ServerResponse, status: number, body: unknown) {
@@ -16,6 +17,7 @@ function json(response: ServerResponse, status: number, body: unknown) {
 interface AppOptions {
   allowedHosts?: string[]
   allowedOrigins?: string[]
+  advisorLearning?: AdvisorLearningStore
 }
 
 export function createApp(service: AccountService, port: number, automation?: AutomationService, options: AppOptions = {}) {
@@ -56,7 +58,7 @@ export function createApp(service: AccountService, port: number, automation?: Au
       if (method === 'GET' && url.pathname === '/api/accounts') { json(response, 200, { accounts: service.listAccounts() }); return }
       if (automation && await handleAutomation(request, response, url, automation, json)) return
       if (await handleFriends(request, response, url, service, json)) return
-      if (await handleAdvisor(request, response, url, service, json)) return
+      if (await handleAdvisor(request, response, url, service, json, options.advisorLearning)) return
       if (await handleChatRequest(request, response, url, service, json)) return
       const loginMatch = /^\/api\/account-logins\/([a-f0-9-]{36})$/i.exec(url.pathname)
       if (loginMatch?.[1]) {

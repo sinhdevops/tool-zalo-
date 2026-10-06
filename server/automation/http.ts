@@ -1,7 +1,7 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { AutomationService } from './service.ts'
 import { ChatError } from '../messages/types.ts'
-import { LEAD_STAGES } from '../../shared/automation.ts'
+import { BULK_MESSAGE_DELAY_SECONDS, BULK_MESSAGE_PAUSE_EVERY, BULK_MESSAGE_PAUSE_SECONDS, LEAD_STAGES } from '../../shared/automation.ts'
 import type { LeadStage } from '../../shared/automation.ts'
 import { phones } from './parse.ts'
 import { AutomationStore } from './store.ts'
@@ -38,14 +38,14 @@ export async function handleAutomation(request: IncomingMessage, response: Serve
     const data = await body(request, Math.ceil(MAX_ATTACHMENT_BYTES * 4 / 3) + 256 * 1024)
     if (typeof data.accountId !== 'string' || typeof data.message !== 'string' || typeof data.phones !== 'string' || typeof data.startTime !== 'string' || typeof data.endTime !== 'string' || typeof data.delaySeconds !== 'number') throw new ChatError('Cấu hình gửi hàng loạt không hợp lệ.')
     const image = data.image === undefined ? undefined : data.image as { name: string; mimeType: string; base64: string }
-    json(response, 200, service.createBulk({ accountId: data.accountId, message: data.message, startTime: data.startTime, endTime: data.endTime, delaySeconds: data.delaySeconds, dailyLimit: typeof data.dailyLimit === 'number' ? data.dailyLimit : 130, pauseEvery: 2, pauseSeconds: 60 }, data.phones.split(/\r?\n/), image))
+    json(response, 200, service.createBulk({ accountId: data.accountId, message: data.message, startTime: data.startTime, endTime: data.endTime, delaySeconds: BULK_MESSAGE_DELAY_SECONDS, dailyLimit: typeof data.dailyLimit === 'number' ? data.dailyLimit : 130, pauseEvery: BULK_MESSAGE_PAUSE_EVERY, pauseSeconds: BULK_MESSAGE_PAUSE_SECONDS }, data.phones.split(/\r?\n/), image))
   }
   else if (action === '/api/automation/bulk/update' && method === 'POST') {
     const data = await body(request, Math.ceil(MAX_ATTACHMENT_BYTES * 4 / 3) + 256 * 1024)
     if (typeof data.id !== 'string' || typeof data.accountId !== 'string' || typeof data.message !== 'string' || typeof data.startTime !== 'string' || typeof data.endTime !== 'string' || typeof data.delaySeconds !== 'number') throw new ChatError('Cấu hình chỉnh sửa không hợp lệ.')
     if (data.removeImage !== undefined && typeof data.removeImage !== 'boolean') throw new ChatError('Trạng thái ảnh đính kèm không hợp lệ.')
     const image = data.image === undefined ? undefined : data.image as { name: string; mimeType: string; base64: string }
-    json(response, 200, service.updateBulkCampaign(data.id, { accountId: data.accountId, message: data.message, startTime: data.startTime, endTime: data.endTime, delaySeconds: data.delaySeconds, dailyLimit: typeof data.dailyLimit === 'number' ? data.dailyLimit : 130, pauseEvery: 2, pauseSeconds: 60 }, image, data.removeImage === true))
+    json(response, 200, service.updateBulkCampaign(data.id, { accountId: data.accountId, message: data.message, startTime: data.startTime, endTime: data.endTime, delaySeconds: BULK_MESSAGE_DELAY_SECONDS, dailyLimit: typeof data.dailyLimit === 'number' ? data.dailyLimit : 130, pauseEvery: BULK_MESSAGE_PAUSE_EVERY, pauseSeconds: BULK_MESSAGE_PAUSE_SECONDS }, image, data.removeImage === true))
   }
   else if (action === '/api/automation/bulk/start' && method === 'POST') {
     const data = await body(request)

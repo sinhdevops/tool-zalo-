@@ -39,6 +39,7 @@ export interface Draft {
   mode: 'draft-only'; action: 'draft' | 'handoff' | 'wait' | 'skip'; reply: string | null;
   intent: Intent[]; missing: string[]; reasons: string[]; sourceMessageIds: string[];
   knowledgeVersion: string; region: Region; facts: AdvisorInput['facts']; offerId?: string;
+  learningMatch?: { id: string; title: string; score: number; applied: boolean };
   priceSheet?: { id: string; path: string; service: 'internet' | 'internet-tv' };
   priceSheets?: { id: string; path: string; service: 'internet' | 'internet-tv' }[];
   recommendation?: { plan?: string; devices?: number; reason: string };

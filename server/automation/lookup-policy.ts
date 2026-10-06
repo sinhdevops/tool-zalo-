@@ -1,6 +1,7 @@
-const VIETNAM_OFFSET_MS = 7 * 60 * 60 * 1000
+import { BULK_MESSAGE_LOOKUP_RETRY_DELAY_MS } from '../../shared/automation.ts'
 
-export const lookupRetryDelay = (retryCount: number) => Math.min(60 * 60 * 1000, 5 * 60 * 1000 * 2 ** Math.min(Math.max(0, retryCount - 1), 4))
+const VIETNAM_OFFSET_MS = 7 * 60 * 60 * 1000
+export const lookupRetryDelay = (_retryCount: number) => BULK_MESSAGE_LOOKUP_RETRY_DELAY_MS
 export const vietnamTime = (timestamp: number) => new Intl.DateTimeFormat('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh', hour: '2-digit', minute: '2-digit' }).format(timestamp)
 
 export function lookupRateLimitRetryAt(code: 312 | 313, message: string, now = Date.now()) {
