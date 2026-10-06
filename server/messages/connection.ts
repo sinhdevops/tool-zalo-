@@ -201,9 +201,8 @@ export class ZaloMessagingConnection implements MessagingConnection {
         file = path.join(directory, source.name)
         await writeFile(file, source.data, { mode: 0o600 })
       }
-      const response = await this.api.sendMessage({ msg: text, attachments: file }, contactId, ThreadType.User)
-      if (!response || typeof response !== 'object') throw new Error('No response')
-      if (!this.disposed && response.message) {
+      const recordText = (response: Awaited<ReturnType<API['sendMessage']>>) => {
+        if (this.disposed || !response.message) return
         const conversation = this.threads.get(keyOf('personal', contactId))
         this.remember({
           id: String(response.message.msgId), threadId: contactId, type: 'personal', senderId: this.ownId,
@@ -211,6 +210,17 @@ export class ZaloMessagingConnection implements MessagingConnection {
         })
         if (conversation) this.setThread(keyOf('personal', contactId), { ...conversation, lastMessage: text, updatedAt: Date.now() })
       }
+      let response: Awaited<ReturnType<API['sendMessage']>>
+      if (file) {
+        const textResponse = await this.api.sendMessage({ msg: text }, contactId, ThreadType.User)
+        if (!textResponse || typeof textResponse !== 'object') throw new Error('No text response')
+        recordText(textResponse)
+        response = await this.api.sendMessage({ msg: '', attachments: file }, contactId, ThreadType.User)
+      } else {
+        response = await this.api.sendMessage({ msg: text }, contactId, ThreadType.User)
+      }
+      if (!response || typeof response !== 'object') throw new Error('No response')
+      if (!file) recordText(response)
     } catch (cause) {
       if (cause instanceof ChatError) throw cause
       const reason = cause instanceof Error && cause.message ? `: ${cause.message}` : ''
