@@ -36,7 +36,7 @@ async function imageUpload(file: File): Promise<BulkMessageImageUpload> {
 
 export default function BulkMessagePage() {
   const { accounts, error: accountError } = useAccounts()
-  const { data, error, refresh } = useChatPolling(automationApi.bulkState, 1500)
+  const { data, error, refresh, applySnapshot } = useChatPolling(automationApi.bulkState, 1500)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [editingCampaignId, setEditingCampaignId] = useState<string | null>(null)
   const [detailsCampaignId, setDetailsCampaignId] = useState<string | null>(null)
@@ -51,6 +51,8 @@ export default function BulkMessagePage() {
   const [removeImage, setRemoveImage] = useState(false)
   const [busy, setBusy] = useState(false)
   const [actionError, setActionError] = useState('')
+  const [actionCampaignId, setActionCampaignId] = useState<string | null>(null)
+  const [retryingCampaignId, setRetryingCampaignId] = useState<string | null>(null)
 
   const selectedAccountId = accountId || accounts[0]?.id || ''
   const editingCampaign = data?.campaigns.find(campaign => campaign.id === editingCampaignId)
@@ -88,24 +90,24 @@ export default function BulkMessagePage() {
   }
 
   async function runCampaign(id: string) {
-    setBusy(true); setActionError('')
-    try { await automationApi.bulkStart(id); refresh() }
+    setBusy(true); setActionError(''); setActionCampaignId(id)
+    try { applySnapshot(await automationApi.bulkStart(id)) }
     catch (cause) { setActionError(cause instanceof Error ? cause.message : 'Không chạy được cấu hình này.') }
     finally { setBusy(false) }
   }
 
   async function stop(id: string) {
-    setBusy(true); setActionError('')
-    try { await automationApi.bulkStop(id); refresh() }
+    setBusy(true); setActionError(''); setActionCampaignId(id)
+    try { applySnapshot(await automationApi.bulkStop(id)) }
     catch (cause) { setActionError(cause instanceof Error ? cause.message : 'Không dừng được lượt gửi.') }
     finally { setBusy(false) }
   }
 
   async function retryFailed(id: string) {
-    setBusy(true); setActionError('')
-    try { await automationApi.bulkRetry(id); refresh() }
+    setBusy(true); setActionError(''); setActionCampaignId(id); setRetryingCampaignId(id)
+    try { applySnapshot(await automationApi.bulkRetry(id)) }
     catch (cause) { setActionError(cause instanceof Error ? cause.message : 'Không gửi lại được các số lỗi.') }
-    finally { setBusy(false) }
+    finally { setBusy(false); setRetryingCampaignId(null) }
   }
 
   return (
@@ -185,12 +187,12 @@ export default function BulkMessagePage() {
                       : failed > 0
                         ? <>
                             {hasPending && <button className="auto-button primary" disabled={busy || accountBusy} onClick={() => void runCampaign(campaign.id)}><FiPlay /> Tiếp tục</button>}
-                            {campaign.items.some(canRetryBulkItem) && <button className="auto-button" disabled={busy || accountBusy} onClick={() => void retryFailed(campaign.id)}><FiRefreshCw /> Gửi lại lỗi tra cứu</button>}
+                            {campaign.items.some(canRetryBulkItem) && <button className="auto-button" disabled={busy || accountBusy} onClick={() => void retryFailed(campaign.id)}><FiRefreshCw /> {retryingCampaignId === campaign.id ? 'Đang đưa vào hàng chờ…' : 'Gửi lại lỗi tra cứu'}</button>}
                           </>
                         : <button className="auto-button primary" disabled={busy || accountBusy || campaign.state === 'completed'} onClick={() => void runCampaign(campaign.id)}><FiPlay /> Chạy</button>}
                   <button className="auto-button" disabled={busy} onClick={() => setDetailsCampaignId(campaign.id)}><FiEye /> Chi tiết</button>
                   <button className="auto-button" disabled={busy || !canEdit} title={!canEdit ? 'Dừng và chờ lượt đang xử lý hoàn tất để chỉnh sửa.' : undefined} onClick={() => openEdit(campaign)}><FiEdit2 /> Chỉnh sửa</button>
-                </div></td>
+                </div>{actionCampaignId === campaign.id && actionError && <p className="auto-error" role="alert">{actionError}</p>}</td>
               </tr>
             })}
           </tbody></table></div>}
@@ -235,7 +237,8 @@ export default function BulkMessagePage() {
         <div className="bulk-detail-modal">
           <div className="bulk-detail-summary"><span>{accounts.find(account => account.id === detailsCampaign.settings.accountId)?.displayName || detailsCampaign.settings.accountId}</span><span>{campaignStateLabels[detailsCampaign.state]}</span><span>{detailsCampaign.items.filter(item => item.status === 'sent').length} đã gửi</span><span>{detailsCampaign.items.filter(item => item.status === 'error').length} lỗi</span></div>
           {detailsCampaign.state !== 'running' && detailsCampaign.items.some(item => item.status === 'pending') && <button className="auto-button primary" disabled={busy} onClick={() => void runCampaign(detailsCampaign.id)}><FiPlay /> Tiếp tục số đang chờ</button>}
-          {detailsCampaign.items.some(canRetryBulkItem) && detailsCampaign.state !== 'running' && <button className="auto-button" disabled={busy} onClick={() => void retryFailed(detailsCampaign.id)}><FiRefreshCw /> Gửi lại lỗi tra cứu</button>}
+          {actionCampaignId === detailsCampaign.id && actionError && <p className="auto-error" role="alert">{actionError}</p>}
+          {detailsCampaign.items.some(canRetryBulkItem) && detailsCampaign.state !== 'running' && <button className="auto-button" disabled={busy} onClick={() => void retryFailed(detailsCampaign.id)}><FiRefreshCw /> {retryingCampaignId === detailsCampaign.id ? 'Đang đưa vào hàng chờ…' : 'Gửi lại lỗi tra cứu'}</button>}
           {!detailsCampaign.items.length ? <div className="auto-empty"><FiPhone /><strong>Danh sách chưa có số điện thoại</strong></div> :
             <div className="auto-table-scroll bulk-detail-scroll"><table className="auto-table bulk-table"><thead><tr><th>Số điện thoại</th><th>Tài khoản</th><th>Trạng thái</th><th>Chi tiết</th><th>Thời gian</th></tr></thead><tbody>
               {detailsCampaign.items.map(item => {

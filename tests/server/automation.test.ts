@@ -174,6 +174,40 @@ test('lookup rate limits pause all accounts until Zalo permits another lookup', 
   assert.equal(f.store.bulkCampaign(second)?.items[0]?.status, 'sent')
 })
 
+test('retry HTTP immediately returns running and requeues only lookup failures even while waiting', async (t) => {
+  for (const waiting of ['schedule', 'quota'] as const) await t.test(waiting, async (t) => {
+    const clock = new Date(waiting === 'schedule' ? '2026-09-24T22:07:00Z' : '2026-09-24T05:07:00Z')
+    const store = new AutomationStore()
+    if (waiting === 'quota') for (let i = 0; i < 60; i++) store.reserveBulkLookup(clock.getTime())
+    store.saveBulkCampaign({
+      id: 'retry-http', createdAt: 1, updatedAt: 2, state: 'completed', settings: bulkSettings,
+      items: [
+        { id: 'lookup', phone: '0900000000', status: 'error', detail: 'Đã hết 2 lần thử lại (3 lần tra cứu). Zalo đang giới hạn tra cứu số điện thoại (mã 312).' },
+        { id: 'blocked', phone: '0380000000', status: 'error', detail: 'Đã tìm thấy Khách, nhưng gửi tin thất bại: không nhận tin nhắn từ người lạ.' },
+        { id: 'sent', phone: '0910000000', status: 'sent', detail: 'Đã gửi.', sentAt: 123 },
+      ],
+    })
+    const f = automationFixture(store, 0, () => clock)
+    const server = createApp(f.accounts as AccountService, 3001, f.service)
+    server.listen(0, '127.0.0.1')
+    await new Promise<void>(resolve => server.once('listening', resolve))
+    t.after(async () => { server.closeAllConnections(); server.close(); await f.service.close() })
+    const address = server.address(); assert.ok(address && typeof address !== 'string')
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/automation/bulk/retry`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Zalo-Tool': '1' }, body: JSON.stringify({ id: 'retry-http' }),
+    })
+    assert.equal(response.status, 200)
+    const state = await response.json() as ReturnType<typeof f.service.bulkSnapshot>
+    assert.equal(state.running, true)
+    assert.equal(state.campaigns[0]?.state, 'running')
+    assert.deepEqual(state.items.map(item => item.status), ['pending', 'error', 'sent'])
+    assert.match(state.pausedReason, waiting === 'schedule' ? /Ngoài khung giờ/ : /hạn mức chung/)
+    await f.drain()
+    assert.equal(f.service.bulkSnapshot().campaigns[0]?.state, 'running')
+    assert.equal(f.calls.filter(call => call.kind === 'find-user').length, 0)
+  })
+})
+
 test('two accounts share exactly sixty lookup slots and resume at the rolling hour boundary', async (t) => {
   let clock = new Date('2026-09-24T05:07:00Z')
   const startedAt = clock.getTime()
