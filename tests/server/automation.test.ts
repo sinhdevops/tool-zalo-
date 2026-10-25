@@ -64,7 +64,7 @@ test('bulk sending waits one minute between messages and two minutes after two c
   ])
 })
 
-test('a failed lookup retries twice at one-minute intervals, then skips that number and continues', async (t) => {
+test('a failed lookup retries once, then skips that number and continues', async (t) => {
   let clock = new Date('2026-09-24T05:07:00Z')
   const f = automationFixture(new AutomationStore(), 0, () => clock)
   t.after(() => f.service.close())
@@ -72,7 +72,6 @@ test('a failed lookup retries twice at one-minute intervals, then skips that num
   f.setFindUser(async phone => {
     if (phone === '0900000000') {
       failedLookups += 1
-      if (failedLookups === 1) throw new ZaloLookupRateLimitError('Zalo tạm giới hạn tra cứu.', 312, clock.getTime() + 60 * 60 * 1000)
       throw new Error('Không tìm thấy.')
     }
     return { id: '123', name: 'Khách thử', avatar: '' }
@@ -88,14 +87,14 @@ test('a failed lookup retries twice at one-minute intervals, then skips that num
   assert.equal(f.service.bulkSnapshot().items.find(item => item.phone === '0380000000')?.status, 'sent')
   assert.equal(f.service.bulkSnapshot().running, true)
 
-  for (let attempt = 0; attempt < 2; attempt += 1) {
+  for (let attempt = 0; attempt < 1; attempt += 1) {
     clock = new Date(clock.getTime() + BULK_MESSAGE_LOOKUP_RETRY_DELAY_MS)
     await f.drain()
   }
   const failed = f.service.bulkSnapshot().items.find(item => item.phone === '0900000000')
-  assert.equal(failedLookups, 3)
+  assert.equal(failedLookups, 2)
   assert.equal(failed?.status, 'error')
-  assert.match(failed?.detail ?? '', /hết 2 lần thử lại/)
+  assert.match(failed?.detail ?? '', /hết 1 lần thử lại \(2 lần tra cứu\)/)
   assert.equal(f.service.bulkSnapshot().sent, 1)
   assert.equal(f.service.bulkSnapshot().running, false)
 })
@@ -133,7 +132,9 @@ test('retrying a completed bulk campaign sends only failed numbers and keeps sen
     id: 'retry-failed', createdAt: 1, updatedAt: 2, state: 'completed', settings: bulkSettings,
     items: [
       { id: 'sent', phone: '0900000000', status: 'sent', detail: 'Đã gửi.', sentAt: 123 },
-      { id: 'failed', phone: '0380000000', status: 'error', detail: 'Lỗi cũ.' },
+      { id: 'failed', phone: '0380000000', status: 'error', detail: 'Không nhận được kết quả tra cứu ổn định từ Zalo.' },
+      { id: 'blocked', phone: '0910000000', status: 'error', detail: 'Đã tìm thấy Khách, nhưng gửi tin thất bại: chặn tin nhắn từ người lạ.' },
+      { id: 'send-failed', phone: '0920000000', status: 'error', failureStage: 'send', detail: 'Mất kết nối khi gửi.' },
     ],
   })
   const f = automationFixture(store, 0, () => new Date('2026-09-24T05:07:00Z'))
@@ -142,7 +143,92 @@ test('retrying a completed bulk campaign sends only failed numbers and keeps sen
   await f.drain()
   assert.deepEqual(f.calls.filter(call => call.kind === 'find-user').map(call => call.id), ['0380000000'])
   assert.equal(f.service.bulkSnapshot().sent, 2)
-  assert.equal(f.service.bulkSnapshot().failed, 0)
+  assert.equal(f.service.bulkSnapshot().failed, 2)
+})
+
+test('lookup rate limits pause all accounts until Zalo permits another lookup', async (t) => {
+  let clock = new Date('2026-09-24T05:07:00Z')
+  const f = automationFixture(new AutomationStore(), 0, () => clock)
+  t.after(() => f.service.close())
+  const getChat = f.accounts.getMessaging
+  f.accounts.getMessaging = () => getChat('99')
+  let attempts = 0
+  const resumeAt = clock.getTime() + 60 * 60 * 1000
+  f.setFindUser(async () => {
+    if (++attempts === 1) throw new ZaloLookupRateLimitError('Zalo tạm giới hạn tra cứu.', 312, resumeAt)
+    return { id: '123', name: 'Khách', avatar: '' }
+  })
+  const first = f.service.createBulk(bulkSettings, ['0900000000']).campaigns[0]!.id
+  f.service.startBulk(first)
+  await f.drain()
+  const second = f.service.createBulk({ ...bulkSettings, accountId: '98' }, ['0380000000']).campaigns.find(c => c.settings.accountId === '98')!.id
+  f.service.startBulk(second)
+  clock = new Date(resumeAt - 1)
+  await f.drain()
+  assert.equal(attempts, 1)
+  assert.equal(f.store.bulkCampaign(first)?.items[0]?.retryAt, resumeAt)
+  clock = new Date(resumeAt)
+  await f.drain()
+  assert.equal(attempts, 3)
+  assert.equal(f.store.bulkCampaign(first)?.items[0]?.status, 'sent')
+  assert.equal(f.store.bulkCampaign(second)?.items[0]?.status, 'sent')
+})
+
+test('two accounts share exactly sixty lookup slots and resume at the rolling hour boundary', async (t) => {
+  let clock = new Date('2026-09-24T05:07:00Z')
+  const startedAt = clock.getTime()
+  const f = automationFixture(new AutomationStore(), 0, () => clock)
+  t.after(() => f.service.close())
+  const getChat = f.accounts.getMessaging
+  f.accounts.getMessaging = () => getChat('99')
+  f.setFindUser(async () => { throw new Error('Không tìm thấy.') })
+  for (const accountId of ['99', '98']) {
+    const campaign = f.service.createBulk({ ...bulkSettings, accountId }, Array.from({ length: 40 }, (_, i) => `090000${String(i).padStart(4, '0')}`)).campaigns.find(c => c.settings.accountId === accountId)!
+    f.service.startBulk(campaign.id)
+  }
+  for (let i = 0; i < 10; i++) await f.drain()
+  assert.equal(f.calls.filter(c => c.kind === 'find-user').length, 60)
+  assert.equal(f.store.bulkCampaigns().every(c => c.state === 'running'), true)
+  clock = new Date(startedAt + 60 * 60 * 1000 - 1)
+  await f.drain()
+  assert.equal(f.calls.filter(c => c.kind === 'find-user').length, 60)
+  clock = new Date(startedAt + 60 * 60 * 1000)
+  await f.drain()
+  assert.ok(f.calls.filter(c => c.kind === 'find-user').length > 60)
+  assert.ok(f.calls.filter(c => c.kind === 'find-user').length <= 120)
+})
+
+test('lookup quota and provider cooldown survive reopening the database', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'bulk-quota-'))
+  const file = join(dir, 'automation.sqlite')
+  let store = new AutomationStore(file)
+  const now = Date.now()
+  try {
+    for (let i = 0; i < 60; i++) assert.equal(store.reserveBulkLookup(now), null)
+    store.deferBulkLookups(now + 61 * 60 * 1000)
+    store.close()
+    store = new AutomationStore(file)
+    assert.equal(store.reserveBulkLookup(now), now + 61 * 60 * 1000)
+    assert.equal(store.reserveBulkLookup(now + 60 * 60 * 1000), now + 61 * 60 * 1000)
+    assert.equal(store.reserveBulkLookup(now + 61 * 60 * 1000), null)
+  } finally {
+    store.close()
+    await unlink(file)
+    await rmdir(dir)
+  }
+})
+
+test('manual retry rejects campaigns containing only stranger-message failures', async (t) => {
+  const f = automationFixture(new AutomationStore(), 0, () => new Date('2026-09-24T05:07:00Z'))
+  t.after(() => f.service.close())
+  f.setBulkSend(async () => { throw new Error('Không nhận tin nhắn từ người lạ.') })
+  const id = f.service.createBulk(bulkSettings, ['0900000000']).campaigns[0]!.id
+  f.service.startBulk(id)
+  await f.drain()
+  assert.throws(() => f.service.retryBulkFailed(id), /Không có lỗi tra cứu/)
+  await f.drain()
+  assert.equal(f.calls.filter(c => c.kind === 'find-user').length, 1)
+  assert.equal(f.calls.filter(c => c.kind === 'bulk-send').length, 1)
 })
 
 test('bulk campaign shows why it is waiting, then proceeds when Vietnam schedule opens', async (t) => {

@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { FiAlertCircle, FiArrowLeft, FiCheckCircle, FiClock, FiEdit2, FiEye, FiImage, FiMessageSquare, FiPhone, FiPlay, FiPlus, FiRefreshCw, FiSquare, FiX } from 'react-icons/fi'
-import { BULK_MESSAGE_DELAY_SECONDS, BULK_MESSAGE_MAX_LOOKUP_RETRIES, BULK_MESSAGE_PAUSE_EVERY, BULK_MESSAGE_PAUSE_SECONDS } from '../../../shared/automation'
+import { canRetryBulkItem, BULK_MESSAGE_LOOKUPS_PER_HOUR, BULK_MESSAGE_DELAY_SECONDS, BULK_MESSAGE_MAX_LOOKUP_RETRIES, BULK_MESSAGE_PAUSE_EVERY, BULK_MESSAGE_PAUSE_SECONDS } from '../../../shared/automation'
 import type { BulkMessageCampaign, BulkMessageImageUpload } from '../../../shared/automation'
 import { MAX_ATTACHMENT_BYTES } from '../../../shared/messages'
 import Modal from '../../components/common/Modal'
@@ -152,7 +152,7 @@ export default function BulkMessagePage() {
           <div className="auto-detail-card__heading"><div><span>01</span><h2>Luồng xử lý</h2></div></div>
           <ol className="auto-process">
             <li><span>1</span><div><strong>Đọc từng số điện thoại</strong><p>Danh sách nhập theo dạng mỗi dòng một số, tự bỏ số trùng.</p></div></li>
-            <li><span>2</span><div><strong>Tìm và chờ phản hồi Zalo</strong><p>Tra cứu lỗi sẽ thử lại tối đa {BULK_MESSAGE_MAX_LOOKUP_RETRIES} lần; các số khác vẫn tiếp tục chạy.</p></div></li>
+            <li><span>2</span><div><strong>Tìm và chờ phản hồi Zalo</strong><p>Mỗi số thử lại tối đa {BULK_MESSAGE_MAX_LOOKUP_RETRIES} lần (2 lượt tra cứu). Toàn bộ chiến dịch dùng chung {BULK_MESSAGE_LOOKUPS_PER_HOUR} lượt/giờ, gồm cả lần đầu và thử lại. Hết hạn mức sẽ chờ rồi tự tiếp tục. Bỏ qua lỗi chặn tin nhắn người lạ.</p></div></li>
             <li><span>3</span><div><strong>Giữ số còn lại đến ngày sau</strong><p>Đạt giới hạn tin thành công trong ngày thì danh sách chờ đến ngày mai và tự chạy tiếp.</p></div></li>
           </ol>
         </section>
@@ -185,7 +185,7 @@ export default function BulkMessagePage() {
                       : failed > 0
                         ? <>
                             {hasPending && <button className="auto-button primary" disabled={busy || accountBusy} onClick={() => void runCampaign(campaign.id)}><FiPlay /> Tiếp tục</button>}
-                            <button className="auto-button" disabled={busy || accountBusy} onClick={() => void retryFailed(campaign.id)}><FiRefreshCw /> Gửi lại lỗi</button>
+                            {campaign.items.some(canRetryBulkItem) && <button className="auto-button" disabled={busy || accountBusy} onClick={() => void retryFailed(campaign.id)}><FiRefreshCw /> Gửi lại lỗi tra cứu</button>}
                           </>
                         : <button className="auto-button primary" disabled={busy || accountBusy || campaign.state === 'completed'} onClick={() => void runCampaign(campaign.id)}><FiPlay /> Chạy</button>}
                   <button className="auto-button" disabled={busy} onClick={() => setDetailsCampaignId(campaign.id)}><FiEye /> Chi tiết</button>
@@ -235,11 +235,11 @@ export default function BulkMessagePage() {
         <div className="bulk-detail-modal">
           <div className="bulk-detail-summary"><span>{accounts.find(account => account.id === detailsCampaign.settings.accountId)?.displayName || detailsCampaign.settings.accountId}</span><span>{campaignStateLabels[detailsCampaign.state]}</span><span>{detailsCampaign.items.filter(item => item.status === 'sent').length} đã gửi</span><span>{detailsCampaign.items.filter(item => item.status === 'error').length} lỗi</span></div>
           {detailsCampaign.state !== 'running' && detailsCampaign.items.some(item => item.status === 'pending') && <button className="auto-button primary" disabled={busy} onClick={() => void runCampaign(detailsCampaign.id)}><FiPlay /> Tiếp tục số đang chờ</button>}
-          {detailsCampaign.items.some(item => item.status === 'error') && detailsCampaign.state !== 'running' && <button className="auto-button" disabled={busy} onClick={() => void retryFailed(detailsCampaign.id)}><FiRefreshCw /> Gửi lại số lỗi</button>}
+          {detailsCampaign.items.some(canRetryBulkItem) && detailsCampaign.state !== 'running' && <button className="auto-button" disabled={busy} onClick={() => void retryFailed(detailsCampaign.id)}><FiRefreshCw /> Gửi lại lỗi tra cứu</button>}
           {!detailsCampaign.items.length ? <div className="auto-empty"><FiPhone /><strong>Danh sách chưa có số điện thoại</strong></div> :
             <div className="auto-table-scroll bulk-detail-scroll"><table className="auto-table bulk-table"><thead><tr><th>Số điện thoại</th><th>Tài khoản</th><th>Trạng thái</th><th>Chi tiết</th><th>Thời gian</th></tr></thead><tbody>
               {detailsCampaign.items.map(item => {
-                const waitingForRetry = Boolean(item.retryAt && item.retryAt > Date.now())
+                const waitingForRetry = item.status === 'pending' && Boolean(item.retryAt)
                 return <tr key={item.id}><td><strong>{item.phone}</strong></td><td>{item.name || '—'}</td><td><span className={`bulk-status ${waitingForRetry ? 'searching' : item.status}`}>{waitingForRetry ? 'Chờ thử lại' : statusLabels[item.status]}</span></td><td>{item.detail}</td><td>{item.sentAt ? new Date(item.sentAt).toLocaleString('vi-VN') : '—'}</td></tr>
               })}
             </tbody></table></div>}

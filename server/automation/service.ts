@@ -1,8 +1,9 @@
 import { randomUUID } from 'node:crypto'
 import type { AccountService } from '../accounts/service.ts'
 import type { MessagingConnection } from '../messages/types.ts'
-import { ChatError } from '../messages/types.ts'
-import { BULK_MESSAGE_DELAY_SECONDS, BULK_MESSAGE_LOOKUP_RETRY_DELAY_MS, BULK_MESSAGE_MAX_LOOKUP_RETRIES, BULK_MESSAGE_PAUSE_EVERY, BULK_MESSAGE_PAUSE_SECONDS } from '../../shared/automation.ts'
+import { ChatError, ZaloLookupRateLimitError } from '../messages/types.ts'
+import { canRetryBulkItem, BULK_MESSAGE_LOOKUPS_PER_HOUR } from '../../shared/automation.ts'
+import { BULK_MESSAGE_DELAY_SECONDS, BULK_MESSAGE_MAX_LOOKUP_RETRIES, BULK_MESSAGE_PAUSE_EVERY, BULK_MESSAGE_PAUSE_SECONDS } from '../../shared/automation.ts'
 import type { AutomationRule, BulkMessageCampaign, BulkMessageImageUpload, BulkMessageItem, BulkMessageSettings, BulkMessageSnapshot, IncomingMessage, Lead } from '../../shared/automation.ts'
 import { AutomationStore } from './store.ts'
 import type { Job } from './store.ts'
@@ -47,7 +48,6 @@ export class AutomationService {
     this.accounts = accounts; this.store = store; this.settleMs = settleMs
     this.bulkClock = bulkClock
     for (const campaign of store.bulkCampaigns()) {
-      let current = campaign
       let running = campaign.state === 'running'
       let nextActionAt = 0
       let pausedReason = campaign.state === 'completed' ? 'Đã xử lý xong danh sách.' : campaign.state === 'stopped' ? 'Đã dừng thủ công.' : 'Chưa chạy'
@@ -56,13 +56,11 @@ export class AutomationService {
         const items = campaign.items.map(item => {
           if (item.status === 'searching') {
             const retryCount = (item.retryCount ?? 0) + 1
-            if (retryCount > BULK_MESSAGE_MAX_LOOKUP_RETRIES) return { ...item, status: 'error' as const, retryCount, retryAt: undefined, detail: 'Đã hết 2 lần thử lại khi khôi phục tra cứu. Bỏ qua số này và tiếp tục danh sách.' }
-            return { ...item, status: 'pending' as const, retryCount, retryAt: Date.now() + lookupRetryDelay(retryCount), detail: 'Máy chủ khởi động lại khi đang tra cứu số này. Sẽ thử lại số này trong khoảng 1 phút.' }
+            if (retryCount > BULK_MESSAGE_MAX_LOOKUP_RETRIES) return { ...item, status: 'error' as const, failureStage: 'lookup' as const, retryCount, retryAt: undefined, detail: 'Đã hết 1 lần thử lại (2 lượt tra cứu) khi khôi phục tra cứu. Bỏ qua số này và tiếp tục danh sách.' }
+            return { ...item, status: 'pending' as const, retryCount, retryAt: this.bulkClock().getTime() + lookupRetryDelay(), detail: 'Máy chủ khởi động lại khi đang tra cứu số này. Sẽ thử lại số này trong khoảng 1 phút.' }
           }
-          if (item.status === 'sending') return { ...item, status: 'error' as const, detail: 'Máy chủ khởi động lại khi đang gửi. Kiểm tra Zalo trước khi gửi lại để tránh gửi trùng.' }
-          if (item.status === 'pending' && item.retryAt && item.retryAt > Date.now()) {
-            return { ...item, retryAt: Math.min(item.retryAt, Date.now() + BULK_MESSAGE_LOOKUP_RETRY_DELAY_MS) }
-          }
+          if (item.status === 'sending') return { ...item, status: 'error' as const, failureStage: 'send' as const, detail: 'Máy chủ khởi động lại khi đang gửi. Kiểm tra Zalo trước khi gửi lại để tránh gửi trùng.' }
+          if (item.status === 'pending' && (item.retryCount ?? 0) > BULK_MESSAGE_MAX_LOOKUP_RETRIES) return { ...item, status: 'error' as const, failureStage: 'lookup' as const, retryAt: undefined, detail: `Đã hết 1 lần thử lại. Bỏ qua số này. ${item.detail}` }
           return item
         })
         running = items.some(item => item.status === 'pending')
@@ -74,7 +72,7 @@ export class AutomationService {
         pausedReason = interruptedSend
           ? 'Một lượt gửi bị gián đoạn khi máy chủ khởi động lại; số đó cần kiểm tra. Các số còn lại sẽ tiếp tục.'
           : running ? 'Đang khôi phục chiến dịch sau khi khởi động lại.' : 'Đã xử lý xong danh sách.'
-        current = { ...campaign, updatedAt: Date.now(), state: running ? 'running' : 'completed', items }
+        const current: BulkMessageCampaign = { ...campaign, updatedAt: Date.now(), state: running ? 'running' : 'completed', items }
         store.saveBulkCampaign(current)
       }
       this.bulkRuns.set(campaign.id, { campaignId: campaign.id, running, busy: false, nextActionAt, successCount: 0, pausedReason })
@@ -361,7 +359,7 @@ export class AutomationService {
     this.assertBulkAccountAvailable(id, campaign.settings.accountId)
     this.accounts.getMessaging(campaign.settings.accountId)
     this.store.saveBulkCampaign({ ...campaign, updatedAt: Date.now(), state: 'running', items: campaign.items.map(item => item.status === 'pending' ? { ...item, detail: item.retryAt ? item.detail : 'Đã vào hàng chờ gửi.' } : item) })
-    this.bulkRuns.set(id, { campaignId: id, running: true, busy: false, nextActionAt: 0, successCount: 0, pausedReason: '' })
+    this.bulkRuns.set(id, { campaignId: id, running: true, busy: false, nextActionAt: currentRun?.nextActionAt ?? 0, successCount: currentRun?.successCount ?? 0, pausedReason: '' })
     this.bulkFocusCampaignId = id
     void this.tickBulk(id)
     return this.bulkSnapshot()
@@ -374,13 +372,13 @@ export class AutomationService {
     if (!campaign) throw new ChatError('Không tìm thấy cấu hình gửi tin.', 404)
     const currentRun = this.bulkRuns.get(campaignId)
     if (currentRun?.running || currentRun?.busy) throw new ChatError('Chiến dịch này đang chạy hoặc đang hoàn tất một lượt gửi.', 409)
-    const failed = campaign.items.filter(item => item.status === 'error')
-    if (!failed.length) throw new ChatError('Chiến dịch này không có số lỗi để gửi lại.', 409)
+    const failed = campaign.items.filter(canRetryBulkItem)
+    if (!failed.length) throw new ChatError('Không có lỗi tra cứu để thử lại. Các lỗi gửi tin, gồm chặn tin nhắn người lạ, được bỏ qua.', 409)
     this.assertBulkAccountAvailable(campaignId, campaign.settings.accountId)
     this.accounts.getMessaging(campaign.settings.accountId)
     const items = campaign.items.map(item => {
-      if (item.status !== 'error') return item
-      return { ...item, status: 'pending' as const, detail: `Đã đưa số này vào hàng chờ gửi lại theo yêu cầu. ${item.detail}`, retryAt: undefined, retryCount: 0, sentAt: undefined }
+      if (!canRetryBulkItem(item)) return item
+      return { ...item, status: 'pending' as const, detail: `Đã đưa số này vào hàng chờ gửi lại theo yêu cầu. ${item.detail}`, failureStage: undefined, retryAt: undefined, retryCount: 0, sentAt: undefined }
     })
     this.store.saveBulkCampaign({ ...campaign, updatedAt: Date.now(), state: 'running', items })
     this.bulkRuns.set(campaignId, { campaignId, running: true, busy: false, nextActionAt: 0, successCount: 0, pausedReason: `Đang gửi lại ${failed.length} số đã lỗi.` })
@@ -469,7 +467,7 @@ export class AutomationService {
     if (!pending.length) {
       run.running = false
       const failedCount = campaign.items.filter(item => item.status === 'error').length
-      run.pausedReason = failedCount ? `Đã xử lý xong danh sách. Còn ${failedCount} số lỗi có thể gửi lại thủ công.` : 'Đã xử lý xong danh sách.'
+      run.pausedReason = failedCount ? `Đã xử lý xong danh sách. Còn ${failedCount} số lỗi; chỉ lỗi tra cứu được gửi lại.` : 'Đã xử lý xong danh sách.'
       this.saveBulkRun(run, 'completed')
       return
     }
@@ -498,7 +496,7 @@ export class AutomationService {
       return
     }
     if (now < run.nextActionAt) {
-      run.pausedReason = 'Đang chờ theo giới hạn tốc độ.'
+      run.pausedReason = `Đang chờ theo giới hạn tốc độ; tiếp tục lúc ${vietnamTime(run.nextActionAt)} (giờ Việt Nam).`
       return
     }
     if (this.bulkAccountsBusy.has(campaign.settings.accountId)) {
@@ -524,6 +522,12 @@ export class AutomationService {
       return
     }
 
+    const availableAt = this.store.reserveBulkLookup(this.bulkClock().getTime())
+    if (availableAt !== null) {
+      run.nextActionAt = Math.max(run.nextActionAt, availableAt)
+      run.pausedReason = `Đang chờ hạn mức chung ${BULK_MESSAGE_LOOKUPS_PER_HOUR} lượt tra cứu/giờ trên toàn bộ chiến dịch. Tiếp tục lúc ${vietnamTime(availableAt)} (giờ Việt Nam).`
+      return
+    }
     run.busy = true
     this.bulkAccountsBusy.add(campaign.settings.accountId)
     this.updateBulkItem(run, next.id, { status: 'searching', detail: 'Đang tìm tài khoản Zalo theo số điện thoại.', retryAt: undefined })
@@ -537,7 +541,7 @@ export class AutomationService {
         return
       }
       foundUserName = user.name
-      this.updateBulkItem(run, next.id, { status: 'sending', detail: `Đã tìm thấy ${user.name || 'tài khoản Zalo'}, đang gửi tin.`, name: user.name, retryCount: undefined })
+      this.updateBulkItem(run, next.id, { status: 'sending', detail: `Đã tìm thấy ${user.name || 'tài khoản Zalo'}, đang gửi tin.`, name: user.name, failureStage: undefined })
       const image = this.store.bulkImage(campaign.id)
       await chat.automationSendMessage(user.id, campaign.settings.message, image ? { name: image.name, base64: image.base64 } : undefined)
       const sentAt = this.bulkClock().getTime()
@@ -555,23 +559,28 @@ export class AutomationService {
       if (!lookupCompleted) {
         const retryCount = (next.retryCount ?? 0) + 1
         run.successCount = 0
+        const failedAt = this.bulkClock().getTime()
+        if (cause instanceof ZaloLookupRateLimitError) {
+          this.store.deferBulkLookups(cause.retryAt)
+          run.nextActionAt = Math.max(run.nextActionAt, cause.retryAt)
+        }
         if (retryCount <= BULK_MESSAGE_MAX_LOOKUP_RETRIES) {
-          const retryAt = now + lookupRetryDelay(retryCount)
+          const retryAt = Math.max(failedAt + lookupRetryDelay(), cause instanceof ZaloLookupRateLimitError ? cause.retryAt : 0)
           const time = vietnamTime(retryAt)
           const detail = `Tra cứu số này chưa thành công (${retryCount}/${BULK_MESSAGE_MAX_LOOKUP_RETRIES} lần thử lại): ${reason} Sẽ thử lại lúc ${time} (giờ Việt Nam).`
-          this.updateBulkItem(run, next.id, { status: 'pending', detail, retryAt, retryCount })
+          this.updateBulkItem(run, next.id, { status: 'pending', detail, retryAt, retryCount, failureStage: 'lookup' })
           const hasReadyItem = this.store.bulkCampaign(run.campaignId)?.items.some(item => item.id !== next.id && item.status === 'pending' && (!item.retryAt || item.retryAt <= now))
           if (!hasReadyItem) run.nextActionAt = Math.max(run.nextActionAt, retryAt)
           run.pausedReason = hasReadyItem
             ? `${next.phone} sẽ được thử lại lúc ${time}; đang tiếp tục các số còn lại.`
             : `Đang chờ thử lại ${next.phone} lúc ${time} (giờ Việt Nam).`
         } else {
-          this.updateBulkItem(run, next.id, { status: 'error', detail: `Đã hết ${BULK_MESSAGE_MAX_LOOKUP_RETRIES} lần thử lại (${retryCount} lần tra cứu). Bỏ qua số này và tiếp tục danh sách. ${reason}`, retryCount, retryAt: undefined })
+          this.updateBulkItem(run, next.id, { status: 'error', detail: `Đã hết ${BULK_MESSAGE_MAX_LOOKUP_RETRIES} lần thử lại (${retryCount} lần tra cứu). Bỏ qua số này và tiếp tục danh sách. ${reason}`, retryCount, retryAt: undefined, failureStage: 'lookup' })
           run.pausedReason = `Đã bỏ qua ${next.phone} sau ${BULK_MESSAGE_MAX_LOOKUP_RETRIES} lần thử lại; tiếp tục danh sách.`
         }
       } else {
         const detail = `Đã tìm thấy ${foundUserName || 'tài khoản Zalo'}, nhưng gửi tin thất bại: ${reason} Không tự gửi lại số này để tránh gửi trùng; sẽ tiếp tục các số còn lại.`
-        this.updateBulkItem(run, next.id, { status: 'error', detail })
+        this.updateBulkItem(run, next.id, { status: 'error', detail, failureStage: 'send', retryAt: undefined })
         run.successCount = 0
         run.nextActionAt = this.bulkClock().getTime() + BULK_MESSAGE_DELAY_SECONDS * 1000
         run.pausedReason = `Gửi tới ${next.phone} không thành công; tiếp tục các số còn lại sau ${BULK_MESSAGE_DELAY_SECONDS} giây.`
@@ -584,7 +593,7 @@ export class AutomationService {
         if (!latest || !latest.items.some(item => item.status === 'pending' || item.status === 'searching' || item.status === 'sending')) {
           run.running = false
           const failedCount = latest?.items.filter(item => item.status === 'error').length ?? 0
-          run.pausedReason = failedCount ? `Đã xử lý xong danh sách. Còn ${failedCount} số lỗi có thể gửi lại thủ công.` : 'Đã xử lý xong danh sách.'
+          run.pausedReason = failedCount ? `Đã xử lý xong danh sách. Còn ${failedCount} số lỗi; chỉ lỗi tra cứu được gửi lại.` : 'Đã xử lý xong danh sách.'
           this.saveBulkRun(run, 'completed')
         }
       }

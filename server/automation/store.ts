@@ -1,5 +1,6 @@
 import { DatabaseSync } from 'node:sqlite'
 import { randomUUID } from 'node:crypto'
+import { BULK_MESSAGE_LOOKUPS_PER_HOUR, BULK_MESSAGE_LOOKUP_WINDOW_MS } from '../../shared/automation.ts'
 import type { AutomationRule, BulkMessageCampaign, Lead, AutomationLog, LeadStage } from '../../shared/automation.ts'
 
 export interface Job {
@@ -20,6 +21,9 @@ export class AutomationStore {
       CREATE TABLE IF NOT EXISTS automation_jobs(id TEXT PRIMARY KEY, state TEXT NOT NULL, body TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS bulk_message_campaigns(id TEXT PRIMARY KEY, updatedAt INTEGER NOT NULL, body TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS bulk_message_images(campaign_id TEXT PRIMARY KEY, name TEXT NOT NULL, mimeType TEXT NOT NULL, data BLOB NOT NULL);
+      CREATE TABLE IF NOT EXISTS bulk_lookup_attempts(id INTEGER PRIMARY KEY, at INTEGER NOT NULL);
+      CREATE INDEX IF NOT EXISTS bulk_lookup_attempts_at ON bulk_lookup_attempts(at);
+      CREATE TABLE IF NOT EXISTS bulk_lookup_cooldown(id INTEGER PRIMARY KEY CHECK(id=1), until INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS automation_logs(id INTEGER PRIMARY KEY, at INTEGER NOT NULL, text TEXT NOT NULL, leadId TEXT);`)
     this.pruneLogs()
     // Never execute jobs created by the removed friend/private-message workflow.
@@ -87,6 +91,20 @@ export class AutomationStore {
   }
   saveBulkCampaign(campaign: BulkMessageCampaign) {
     this.db.prepare('INSERT INTO bulk_message_campaigns VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET updatedAt=excluded.updatedAt,body=excluded.body').run(campaign.id, campaign.updatedAt, JSON.stringify(campaign))
+  }
+  reserveBulkLookup(now: number): number | null {
+    return this.transaction(() => {
+      this.db.prepare('DELETE FROM bulk_lookup_attempts WHERE at<=?').run(now - BULK_MESSAGE_LOOKUP_WINDOW_MS)
+      const cooldown = Number(this.db.prepare('SELECT until FROM bulk_lookup_cooldown WHERE id=1').get()?.until ?? 0)
+      const attempts = this.db.prepare('SELECT COUNT(*) AS n, MIN(at) AS oldest FROM bulk_lookup_attempts').get()!
+      const availableAt = Math.max(cooldown, Number(attempts.n) >= BULK_MESSAGE_LOOKUPS_PER_HOUR ? Number(attempts.oldest) + BULK_MESSAGE_LOOKUP_WINDOW_MS : 0)
+      if (availableAt > now) return availableAt
+      this.db.prepare('INSERT INTO bulk_lookup_attempts(at) VALUES(?)').run(now)
+      return null
+    })
+  }
+  deferBulkLookups(until: number) {
+    this.db.prepare('INSERT INTO bulk_lookup_cooldown VALUES(1,?) ON CONFLICT(id) DO UPDATE SET until=MAX(until,excluded.until)').run(until)
   }
   saveBulkImage(id: string, image: { name: string; mimeType: string; base64: string }) {
     this.db.prepare('INSERT INTO bulk_message_images VALUES(?,?,?,?) ON CONFLICT(campaign_id) DO UPDATE SET name=excluded.name,mimeType=excluded.mimeType,data=excluded.data')

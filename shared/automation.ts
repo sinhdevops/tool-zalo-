@@ -26,7 +26,9 @@ export type BulkMessageItemStatus = 'pending' | 'searching' | 'sending' | 'sent'
 export const BULK_MESSAGE_DELAY_SECONDS = 60
 export const BULK_MESSAGE_PAUSE_EVERY = 2
 export const BULK_MESSAGE_PAUSE_SECONDS = 120
-export const BULK_MESSAGE_MAX_LOOKUP_RETRIES = 2
+export const BULK_MESSAGE_MAX_LOOKUP_RETRIES = 1
+export const BULK_MESSAGE_LOOKUPS_PER_HOUR = 60
+export const BULK_MESSAGE_LOOKUP_WINDOW_MS = 60 * 60 * 1000
 export const BULK_MESSAGE_LOOKUP_RETRY_DELAY_MS = 60_000
 export interface BulkMessageItem {
   id: string
@@ -35,8 +37,16 @@ export interface BulkMessageItem {
   detail: string
   retryAt?: number
   retryCount?: number
+  failureStage?: 'lookup' | 'send'
   name?: string
   sentAt?: number
+}
+// Older campaigns have no failureStage; only recognizable lookup errors are safe to resend.
+export function canRetryBulkItem(item: BulkMessageItem) {
+  if (item.status !== 'error' || /người lạ|stranger/i.test(item.detail)) return false
+  if (item.failureStage) return item.failureStage === 'lookup'
+  return !/đã tìm thấy|đang gửi|khi đang gửi|gửi tin thất bại/i.test(item.detail)
+    && /tra cứu|không tìm thấy|mã\s*(212|216|312|313)/i.test(item.detail)
 }
 export interface BulkMessageSettings {
   accountId: string

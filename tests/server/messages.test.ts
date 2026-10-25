@@ -106,6 +106,30 @@ test('bulk automation accepts a resolved SDK send even when no msgId acknowledge
   assert.deepEqual(f.sends.map(item => ({ text: item.text, id: item.id, type: item.type })), [{ text: 'Tin kiểm thử', id: '33', type: ThreadType.User }])
 })
 
+test('bulk automation sends message text separately before its FPT image', async (t) => {
+  const f = fixture(); t.after(() => f.chat.dispose())
+  f.listener.emit('cipher_key', 'synthetic')
+  await f.chat.automationSendMessage('33', 'Nội dung khuyến mãi FPT', {
+    name: 'fpt-promotion.png', base64: Buffer.from('synthetic image').toString('base64'),
+  })
+  assert.deepEqual(f.sends.map(item => ({ text: item.text, id: item.id, type: item.type, hasFile: Boolean(item.file) })), [
+    { text: 'Nội dung khuyến mãi FPT', id: '33', type: ThreadType.User, hasFile: false },
+    { text: '', id: '33', type: ThreadType.User, hasFile: true },
+  ])
+})
+
+test('bulk automation does not send only the image when Zalo does not acknowledge the text', async (t) => {
+  const f = fixture(); t.after(() => f.chat.dispose())
+  f.listener.emit('cipher_key', 'synthetic')
+  f.emptySendResponse()
+  await assert.rejects(f.chat.automationSendMessage('33', 'Nội dung khuyến mãi FPT', {
+    name: 'fpt-promotion.png', base64: Buffer.from('synthetic image').toString('base64'),
+  }), /chưa gửi ảnh/)
+  assert.deepEqual(f.sends.map(item => ({ text: item.text, hasFile: Boolean(item.file) })), [
+    { text: 'Nội dung khuyến mãi FPT', hasFile: false },
+  ])
+})
+
 test('bulk automation retries transient Zalo lookup failures before reporting a phone as missing', async (t) => {
   const f = fixture(); t.after(() => f.chat.dispose())
   f.listener.emit('cipher_key', 'synthetic')
@@ -115,7 +139,7 @@ test('bulk automation retries transient Zalo lookup failures before reporting a 
   assert.equal(f.findUserCallCount(), 3)
 })
 
-test('bulk lookup can disable hidden SDK retries so the campaign owns its two retries', async (t) => {
+test('bulk lookup disables hidden SDK retries so each campaign attempt makes one lookup', async (t) => {
   const f = fixture(); t.after(() => f.chat.dispose())
   f.listener.emit('cipher_key', 'synthetic')
   f.failFindUser(5)
