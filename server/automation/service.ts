@@ -554,6 +554,14 @@ export class AutomationService {
       } else {
         run.nextActionAt = sentAt + BULK_MESSAGE_DELAY_SECONDS * 1000
       }
+      // The message is already persisted as sent. A rejected invitation must never requeue it.
+      try {
+        await chat.automationSendFriendRequest(user.id)
+        this.updateBulkItem(run, next.id, { detail: 'Zalo đã xử lý lệnh gửi tin nhắn và lời mời kết bạn thành công.' })
+      } catch (cause) {
+        const friendError = cause instanceof Error ? cause.message : 'Zalo không xử lý được lời mời kết bạn.'
+        this.updateBulkItem(run, next.id, { detail: `Đã gửi tin nhắn thành công, nhưng chưa gửi được lời mời kết bạn: ${friendError} Không gửi lại tin nhắn.` })
+      }
     } catch (cause) {
       const reason = cause instanceof Error ? cause.message : 'Không xử lý được số điện thoại này.'
       if (!lookupCompleted) {

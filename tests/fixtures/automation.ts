@@ -11,6 +11,7 @@ export function automationFixture(store = new AutomationStore(), settleMs = 0, b
   let findUser: (phone: string) => Promise<{ id: string; name: string; avatar: string }> = async () => ({ id: '123', name: 'Khách thử', avatar: '' })
   let findUserMaxRetries: number | undefined
   let bulkSend: (id: string, text: string) => Promise<void> = async () => undefined
+  let friendRequest: (id: string) => Promise<void> = async () => undefined
   let connectionState = 'connected'
   const chat = {
     status: () => connectionState,
@@ -28,11 +29,12 @@ export function automationFixture(store = new AutomationStore(), settleMs = 0, b
     },
     automationFindUser: async (phone: string, _onProgress?: (detail: string) => void, maxRetries?: number) => { findUserMaxRetries = maxRetries; calls.push({ kind: 'find-user', id: phone }); return findUser(phone) },
     automationSendMessage: async (id: string, text: string) => { calls.push({ kind: 'bulk-send', id, text }); await bulkSend(id, text) },
+    automationSendFriendRequest: async (id: string) => { calls.push({ kind: 'friend-request', id }); await friendRequest(id) },
   } as unknown as MessagingConnection
   const accounts = { getMessaging: (id: string) => { if (id !== '99') throw new Error('No account'); return chat } }
   const service = new AutomationService(accounts, store, settleMs, bulkClock)
   const emit = (event: IncomingMessage) => { for (const fn of listeners) fn(event) }
-  return { service, store, calls, accounts, emit, setConnection: (status: string) => { connectionState = status }, setFindUser: (fn: typeof findUser) => { findUser = fn }, findUserRetryLimit: () => findUserMaxRetries, setBulkSend: (fn: typeof bulkSend) => { bulkSend = fn }, failForward: () => { failForward = true }, holdHeart: (fn: () => Promise<void>) => { onHeart = fn }, async enable() { await service.configure('99', '22', '11', '33'); await service.toggle(true) }, async drain() { for (let i = 0; i < 10; i++) { await service.tick(); await new Promise<void>((resolve) => setImmediate(resolve)) } } }
+  return { service, store, calls, accounts, emit, setConnection: (status: string) => { connectionState = status }, setFindUser: (fn: typeof findUser) => { findUser = fn }, findUserRetryLimit: () => findUserMaxRetries, setBulkSend: (fn: typeof bulkSend) => { bulkSend = fn }, setFriendRequest: (fn: typeof friendRequest) => { friendRequest = fn }, failForward: () => { failForward = true }, holdHeart: (fn: () => Promise<void>) => { onHeart = fn }, async enable() { await service.configure('99', '22', '11', '33'); await service.toggle(true) }, async drain() { for (let i = 0; i < 10; i++) { await service.tick(); await new Promise<void>((resolve) => setImmediate(resolve)) } } }
 }
 export function incoming(id: string, text = 'Tên khách hàng: Khách mẫu\nĐịa chỉ lắp đặt: Địa chỉ kiểm thử\nGói cước tư vấn: NETVT2\nSố liên hệ: 0900000000'): IncomingMessage {
   return { clientId: `client-${id}`, message: { id, type: 'group', threadId: '22', senderId: '11', senderName: 'Tên có thể thay đổi', self: false, text, timestamp: Date.now() + 1000, attachments: [] } }

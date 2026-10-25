@@ -237,6 +237,10 @@ export class ZaloMessagingConnection implements MessagingConnection {
       if (directory) await rmdir(directory).catch(() => undefined)
     }
   }
+  async automationSendFriendRequest(contactId: string) {
+    this.requireAutomationConnection(contactId)
+    await this.api.sendFriendRequest('Xin chào, mình muốn kết bạn với bạn.', contactId)
+  }
   openPersonal(contactId: string, name: string) {
     this.requireAutomationConnection(contactId)
     const key = keyOf('personal', contactId)

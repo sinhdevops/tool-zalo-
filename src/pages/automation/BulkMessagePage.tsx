@@ -119,7 +119,7 @@ export default function BulkMessagePage() {
           <span className="auto-tool-card__icon bulk-icon"><FiMessageSquare /></span>
           <div>
             <div className="auto-detail-hero__title"><h1>Gửi tin hàng loạt</h1><span className={`auto-tool-status ${runningCount ? 'active' : ''}`}><i />{runningCount > 1 ? `${runningCount} danh sách đang chạy` : runningCount === 1 ? 'Đang chạy' : 'Đang tắt'}</span></div>
-            <p>Tìm tài khoản Zalo theo danh sách số điện thoại, gửi nội dung và ảnh đính kèm. Mỗi tài khoản chỉ chạy một danh sách tại một thời điểm.</p>
+            <p>Tìm tài khoản Zalo theo danh sách số điện thoại, gửi nội dung và ảnh đính kèm, sau đó gửi lời mời kết bạn khi gửi tin thành công. Mỗi tài khoản chỉ chạy một danh sách tại một thời điểm.</p>
           </div>
         </div>
         <div className="auto-detail-hero__actions">

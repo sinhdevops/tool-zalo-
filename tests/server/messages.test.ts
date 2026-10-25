@@ -98,6 +98,16 @@ function fixture(documentsId?: string, unreadStore?: UnreadStore, chatStore?: En
 }
 const input = (text = 'Tin kiểm thử') => ({ requestId: '12345678-1234-1234-1234-123456789abc', text })
 
+test('automation friendship uses the resolved UID and rejects invalid recipients', async (t) => {
+  const f = fixture(); t.after(() => f.chat.dispose())
+  f.listener.emit('cipher_key', 'synthetic')
+  await f.chat.automationSendFriendRequest('33')
+  assert.deepEqual(f.friends, ['33'])
+  await assert.rejects(f.chat.automationSendFriendRequest('99'), /UID khách hàng không hợp lệ/)
+  await assert.rejects(f.chat.automationSendFriendRequest('090 000 0000'), /UID khách hàng không hợp lệ/)
+  assert.deepEqual(f.friends, ['33'])
+})
+
 test('bulk automation accepts a resolved SDK send even when no msgId acknowledgement is returned', async (t) => {
   const f = fixture(); t.after(() => f.chat.dispose())
   f.listener.emit('cipher_key', 'synthetic')

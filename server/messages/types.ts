@@ -9,6 +9,7 @@ export interface MessagingConnection {
   automationDeliver: (targetGroupId: string, text: string, contacts: Array<{ phone: string; contactId?: string }>) => Promise<Array<{ phone: string; card: boolean }>>
   automationFindUser: (phone: string, onProgress?: (detail: string) => void, maxRetries?: number) => Promise<{ id: string; name: string; avatar: string }>
   automationSendMessage: (contactId: string, text: string, attachment?: { name: string; base64: string }) => Promise<void>
+  automationSendFriendRequest: (contactId: string) => Promise<void>
   openPersonal: (contactId: string, name: string) => Conversation
   list: (type: ConversationType) => Promise<ConversationList>
   friends: () => Promise<FriendContact[]>

@@ -39,6 +39,38 @@ test('starting a bulk campaign searches and sends during Vietnam daytime', async
   assert.equal(f.service.bulkSnapshot().running, false)
 })
 
+test('bulk sending invites the same recipient once after a successful message', async (t) => {
+  const f = automationFixture(new AutomationStore(), 0, () => new Date('2026-09-24T05:07:00Z'))
+  t.after(() => f.service.close())
+  f.setFriendRequest(async () => {
+    assert.equal(f.service.bulkSnapshot().items[0]?.status, 'sent')
+  })
+  const id = f.service.createBulk(bulkSettings, ['0900000000']).campaigns[0]!.id
+  f.service.startBulk(id)
+  await f.drain()
+  assert.deepEqual(f.calls.filter(call => ['bulk-send', 'friend-request'].includes(call.kind)).map(call => [call.kind, call.id]), [['bulk-send', '123'], ['friend-request', '123']])
+  assert.match(f.service.bulkSnapshot().items[0]?.detail ?? '', /lời mời kết bạn thành công/)
+})
+
+test('a rejected invitation keeps the message sent and never retries it', async (t) => {
+  let clock = new Date('2026-09-24T05:07:00Z')
+  const f = automationFixture(new AutomationStore(), 0, () => clock)
+  t.after(() => f.service.close())
+  f.setFriendRequest(async () => { throw new Error('Đã là bạn bè hoặc đã gửi lời mời.') })
+  const id = f.service.createBulk(bulkSettings, ['0900000000', '0380000000']).campaigns[0]!.id
+  f.service.startBulk(id)
+  await f.drain()
+  assert.equal(f.service.bulkSnapshot().sent, 1)
+  assert.equal(f.service.bulkSnapshot().failed, 0)
+  assert.match(f.service.bulkSnapshot().items[0]?.detail ?? '', /Đã gửi tin nhắn thành công, nhưng chưa gửi được lời mời kết bạn/)
+  clock = new Date(clock.getTime() + 60_000)
+  await f.drain()
+  assert.equal(f.service.bulkSnapshot().sent, 2)
+  assert.equal(f.calls.filter(call => call.kind === 'bulk-send').length, 2)
+  assert.equal(f.calls.filter(call => call.kind === 'friend-request').length, 2)
+  assert.throws(() => f.service.retryBulkFailed(id), /Không có lỗi tra cứu/)
+})
+
 test('bulk sending waits one minute between messages and two minutes after two confirmed sends', async (t) => {
   let clock = new Date('2026-09-24T05:07:00Z')
   const f = automationFixture(new AutomationStore(), 0, () => clock)
@@ -113,6 +145,7 @@ test('a rejected send marks only that phone as failed and continues after the on
   await f.drain()
 
   assert.equal(f.service.bulkSnapshot().items[0]?.status, 'error')
+  assert.equal(f.calls.filter(call => call.kind === 'friend-request').length, 0)
   assert.equal(f.service.bulkSnapshot().items[1]?.status, 'pending')
   assert.equal(f.service.bulkSnapshot().running, true)
   assert.match(f.service.bulkSnapshot().items[0]?.detail ?? '', /tiếp tục các số còn lại/)
