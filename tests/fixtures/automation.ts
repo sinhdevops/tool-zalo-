@@ -10,7 +10,7 @@ export function automationFixture(store = new AutomationStore(), settleMs = 0, b
   let onHeart: (() => Promise<void>) | undefined
   let findUser: (phone: string) => Promise<{ id: string; name: string; avatar: string }> = async () => ({ id: '123', name: 'Khách thử', avatar: '' })
   let findUserMaxRetries: number | undefined
-  let bulkSend: (id: string, text: string) => Promise<void> = async () => undefined
+  let bulkSend: MessagingConnection['automationSendMessage'] = async () => undefined
   let friendRequest: (id: string) => Promise<void> = async () => undefined
   let connectionState = 'connected'
   const chat = {
@@ -28,7 +28,7 @@ export function automationFixture(store = new AutomationStore(), settleMs = 0, b
       return contacts.map((item) => ({ phone: item.phone, card: Boolean(item.contactId) }))
     },
     automationFindUser: async (phone: string, _onProgress?: (detail: string) => void, maxRetries?: number) => { findUserMaxRetries = maxRetries; calls.push({ kind: 'find-user', id: phone }); return findUser(phone) },
-    automationSendMessage: async (id: string, text: string) => { calls.push({ kind: 'bulk-send', id, text }); await bulkSend(id, text) },
+    automationSendMessage: async (...args: Parameters<MessagingConnection['automationSendMessage']>) => { calls.push({ kind: 'bulk-send', id: args[0], text: args[1] }); await bulkSend(...args) },
     automationSendFriendRequest: async (id: string) => { calls.push({ kind: 'friend-request', id }); await friendRequest(id) },
   } as unknown as MessagingConnection
   const accounts = { getMessaging: (id: string) => { if (id !== '99') throw new Error('No account'); return chat } }

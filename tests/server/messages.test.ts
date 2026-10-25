@@ -64,6 +64,8 @@ function fixture(documentsId?: string, unreadStore?: UnreadStore, chatStore?: En
   const cards: Array<{ userId: string; phoneNumber?: string; id: string; type: ThreadType }> = []
   let failSend = false
   let emptySendResponse = false
+  let stringMessageIds = false
+  let emptyTextResponse = false
   let findUserFailures = 0
   let findUserCalls = 0
   let uploadedContent = ''
@@ -90,11 +92,12 @@ function fixture(documentsId?: string, unreadStore?: UnreadStore, chatStore?: En
       if (file) uploadedContent = await readFile(file, 'utf8')
       if (failSend) throw new Error('Uncertain transport failure')
       if (emptySendResponse) return { message: null, attachment: [] }
-      return { message: file ? null : { msgId: 777 }, attachment: file ? [{ msgId: 778 }] : [] }
+      if (emptyTextResponse && !file) return { message: null, attachment: [] }
+      return { message: file ? null : { msgId: stringMessageIds ? '777' : 777 }, attachment: file ? [{ msgId: stringMessageIds ? '778' : 778 }] : [] }
     },
   } as unknown as API
   const chat = new ZaloMessagingConnection(api, '99', 'Tài khoản kiểm thử', '', unreadStore, chatStore)
-  return { chat, listener, sends, requests, syncFrames, reactions, friends, cards, fail: () => { failSend = true }, emptySendResponse: () => { emptySendResponse = true }, failFindUser: (count: number) => { findUserFailures = count }, findUserCallCount: () => findUserCalls, uploaded: () => uploadedContent }
+  return { chat, listener, sends, requests, syncFrames, reactions, friends, cards, fail: () => { failSend = true }, emptySendResponse: () => { emptySendResponse = true }, stringIds: () => { stringMessageIds = true }, emptyText: () => { emptyTextResponse = true }, failFindUser: (count: number) => { findUserFailures = count }, findUserCallCount: () => findUserCalls, uploaded: () => uploadedContent }
 }
 const input = (text = 'Tin kiểm thử') => ({ requestId: '12345678-1234-1234-1234-123456789abc', text })
 
@@ -128,16 +131,40 @@ test('bulk automation sends message text separately before its FPT image', async
   ])
 })
 
-test('bulk automation does not send only the image when Zalo does not acknowledge the text', async (t) => {
+test('bulk automation reports an unacknowledged image instead of marking the recipient fully sent', async (t) => {
   const f = fixture(); t.after(() => f.chat.dispose())
   f.listener.emit('cipher_key', 'synthetic')
   f.emptySendResponse()
   await assert.rejects(f.chat.automationSendMessage('33', 'Nội dung khuyến mãi FPT', {
     name: 'fpt-promotion.png', base64: Buffer.from('synthetic image').toString('base64'),
-  }), /chưa gửi ảnh/)
+  }), /chưa xác nhận gửi ảnh/)
   assert.deepEqual(f.sends.map(item => ({ text: item.text, hasFile: Boolean(item.file) })), [
     { text: 'Nội dung khuyến mãi FPT', hasFile: false },
+    { text: '', hasFile: true },
   ])
+})
+
+test('bulk image sending supports string IDs and resolved text responses without IDs', async (t) => {
+  for (const mode of ['string', 'empty-text']) await t.test(mode, async (t) => {
+    const f = fixture(); t.after(() => f.chat.dispose())
+    f.listener.emit('cipher_key', 'synthetic')
+    if (mode === 'string') f.stringIds(); else f.emptyText()
+    const progress: string[] = []
+    await f.chat.automationSendMessage('33', 'Tin kèm ảnh', { name: 'promotion.png', base64: Buffer.from('synthetic image').toString('base64') }, event => progress.push(`${event.stage}:${event.state}`))
+    assert.deepEqual(progress, ['text:sending', 'text:sent', 'image:sending', 'image:sent'])
+    assert.equal(f.sends.length, 2)
+    assert.equal(f.uploaded(), 'synthetic image')
+    assert.deepEqual(f.chat.messages('personal', '33').messages.find(message => message.id === '778')?.attachments, [{ kind: 'image', name: 'promotion.png' }])
+  })
+})
+
+test('a failed text send never starts uploading an image', async (t) => {
+  const f = fixture(); t.after(() => f.chat.dispose())
+  f.listener.emit('cipher_key', 'synthetic')
+  f.fail()
+  await assert.rejects(f.chat.automationSendMessage('33', 'Tin kèm ảnh', { name: 'promotion.png', base64: Buffer.from('synthetic image').toString('base64') }), /Uncertain transport failure/)
+  assert.equal(f.sends.length, 1)
+  assert.equal(f.sends[0]?.file, undefined)
 })
 
 test('bulk automation retries transient Zalo lookup failures before reporting a phone as missing', async (t) => {

@@ -25,6 +25,82 @@ test('bulk schedule uses Vietnam time even when the server uses UTC', () => {
 })
 
 const bulkSettings = { accountId: '99', message: 'Tin nhắn kiểm thử', startTime: '07:00', endTime: '21:00', delaySeconds: BULK_MESSAGE_DELAY_SECONDS, pauseEvery: 2, pauseSeconds: BULK_MESSAGE_PAUSE_SECONDS }
+const bulkImage = { name: 'promotion.png', mimeType: 'image/png', base64: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aN6kAAAAASUVORK5CYII=' }
+
+test('bulk detail tracks text, image and friendship progress with timestamps before completion', async (t) => {
+  let now = new Date('2026-09-24T05:07:00Z').getTime()
+  const f = automationFixture(new AutomationStore(), 0, () => new Date(now))
+  t.after(() => f.service.close())
+  let releaseImage!: () => void
+  let releaseFriend!: () => void
+  f.setBulkSend(async (_id, _text, image, progress) => {
+    assert.equal(image?.base64, bulkImage.base64)
+    progress?.({ stage: 'text', state: 'sending' })
+    now += 1000
+    progress?.({ stage: 'text', state: 'sent' })
+    progress?.({ stage: 'image', state: 'sending' })
+    await new Promise<void>(resolve => { releaseImage = resolve })
+    now += 1000
+    progress?.({ stage: 'image', state: 'sent' })
+  })
+  f.setFriendRequest(async () => { await new Promise<void>(resolve => { releaseFriend = resolve }) })
+  const id = f.service.createBulk(bulkSettings, ['0900000000'], bulkImage).campaigns[0]!.id
+  f.service.startBulk(id)
+  try {
+    await f.drain()
+    const duringImage = f.service.bulkSnapshot().items[0]!
+    assert.equal(duringImage.status, 'sending')
+    assert.equal(duringImage.step, 'image')
+    assert.equal(duringImage.textSentAt, now)
+    assert.equal(duringImage.updatedAt, now)
+    assert.equal(duringImage.sentAt, undefined)
+    assert.match(duringImage.detail, /Đang tải lên và gửi ảnh/)
+    releaseImage()
+    await f.drain()
+    const duringFriend = f.service.bulkSnapshot().items[0]!
+    assert.equal(duringFriend.step, 'friend')
+    assert.equal(duringFriend.imageSentAt, now)
+    assert.equal(duringFriend.finishedAt, undefined)
+    releaseFriend()
+    await f.drain()
+    assert.equal(f.service.bulkSnapshot().items[0]?.step, 'done')
+    assert.equal(f.service.bulkSnapshot().items[0]?.finishedAt, now)
+    assert.match(f.service.bulkSnapshot().items[0]?.detail ?? '', /Đã gửi chữ và ảnh/)
+  } finally { releaseImage?.(); releaseFriend?.(); await f.drain() }
+})
+
+test('image failure preserves text progress and never automatically resends the text', async (t) => {
+  const f = automationFixture(new AutomationStore(), 0, () => new Date('2026-09-24T05:07:00Z'))
+  t.after(() => f.service.close())
+  f.setBulkSend(async (_id, _text, _image, progress) => {
+    progress?.({ stage: 'text', state: 'sent' })
+    progress?.({ stage: 'image', state: 'sending' })
+    throw new Error('Tải ảnh thất bại.')
+  })
+  const id = f.service.createBulk(bulkSettings, ['0900000000'], bulkImage).campaigns[0]!.id
+  f.service.startBulk(id)
+  await f.drain()
+  const item = f.service.bulkSnapshot().items[0]!
+  assert.equal(item.status, 'error')
+  assert.ok(item.textSentAt)
+  assert.equal(item.imageSentAt, undefined)
+  assert.ok(item.finishedAt)
+  assert.match(item.detail, /Đã gửi chữ, nhưng chưa hoàn tất gửi ảnh/)
+  assert.throws(() => f.service.retryBulkFailed(id), /Không có lỗi tra cứu/)
+  assert.equal(f.calls.filter(call => call.kind === 'bulk-send').length, 1)
+})
+
+test('missing saved image data is reported before sending any text', async (t) => {
+  const f = automationFixture(new AutomationStore(), 0, () => new Date('2026-09-24T05:07:00Z'))
+  t.after(() => f.service.close())
+  const id = f.service.createBulk(bulkSettings, ['0900000000'], bulkImage).campaigns[0]!.id
+  f.store.deleteBulkImage(id)
+  f.service.startBulk(id)
+  await f.drain()
+  assert.match(f.service.bulkSnapshot().items[0]?.detail ?? '', /không tìm thấy dữ liệu ảnh/)
+  assert.equal(f.service.bulkSnapshot().items[0]?.status, 'error')
+  assert.equal(f.calls.filter(call => call.kind === 'bulk-send').length, 0)
+})
 
 test('starting a bulk campaign searches and sends during Vietnam daytime', async (t) => {
   const f = automationFixture(new AutomationStore(), 0, () => new Date('2026-09-24T05:07:00Z'))

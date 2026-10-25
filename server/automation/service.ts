@@ -54,6 +54,7 @@ export class AutomationService {
       if (running) {
         const interruptedSend = campaign.items.some(item => item.status === 'sending')
         const items = campaign.items.map(item => {
+          if (item.status === 'sent' && item.step === 'friend') return { ...item, step: 'done' as const, updatedAt: this.bulkClock().getTime(), finishedAt: this.bulkClock().getTime(), detail: `${item.imageSentAt ? 'Đã gửi chữ và ảnh.' : 'Đã gửi tin nhắn.'} Máy chủ khởi động lại khi kết bạn; chưa xác nhận lời mời. Không gửi lại tin nhắn.` }
           if (item.status === 'searching') {
             const retryCount = (item.retryCount ?? 0) + 1
             if (retryCount > BULK_MESSAGE_MAX_LOOKUP_RETRIES) return { ...item, status: 'error' as const, failureStage: 'lookup' as const, retryCount, retryAt: undefined, detail: 'Đã hết 1 lần thử lại (2 lượt tra cứu) khi khôi phục tra cứu. Bỏ qua số này và tiếp tục danh sách.' }
@@ -257,7 +258,11 @@ export class AutomationService {
   }
 
   bulkSnapshot(): BulkMessageSnapshot {
-    const campaigns = this.store.bulkCampaigns()
+    const now = this.bulkClock().getTime()
+    const campaigns = this.store.bulkCampaigns().map(campaign => {
+      const run = this.bulkRuns.get(campaign.id)
+      return { ...campaign, pausedReason: run?.pausedReason, nextActionAt: run && run.nextActionAt > now ? run.nextActionAt : undefined }
+    })
     const focused = campaigns.find(campaign => campaign.id === this.bulkFocusCampaignId && campaign.state === 'running')
       ?? campaigns.find(campaign => campaign.state === 'running')
       ?? campaigns.find(campaign => campaign.id === this.bulkFocusCampaignId)
@@ -268,6 +273,7 @@ export class AutomationService {
     const sent = items.filter(item => item.status === 'sent').length
     const failed = items.filter(item => item.status === 'error').length
     return {
+      snapshotAt: now,
       ...(focused ? { activeCampaignId: focused.id } : {}),
       running: campaigns.some(campaign => campaign.state === 'running'),
       pausedReason: run?.pausedReason ?? '',
@@ -278,7 +284,7 @@ export class AutomationService {
       pending,
       sent,
       failed,
-      ...(run && run.nextActionAt > Date.now() ? { nextActionAt: run.nextActionAt } : {}),
+      ...(run && run.nextActionAt > now ? { nextActionAt: run.nextActionAt } : {}),
     }
   }
 
@@ -378,7 +384,7 @@ export class AutomationService {
     this.accounts.getMessaging(campaign.settings.accountId)
     const items = campaign.items.map(item => {
       if (!canRetryBulkItem(item)) return item
-      return { ...item, status: 'pending' as const, detail: `Đã đưa số này vào hàng chờ gửi lại theo yêu cầu. ${item.detail}`, failureStage: undefined, retryAt: undefined, retryCount: 0, sentAt: undefined }
+      return { ...item, status: 'pending' as const, detail: `Đã đưa số này vào hàng chờ gửi lại theo yêu cầu. ${item.detail}`, failureStage: undefined, retryAt: undefined, retryCount: 0, sentAt: undefined, step: undefined, startedAt: undefined, updatedAt: this.bulkClock().getTime(), textSentAt: undefined, imageSentAt: undefined, finishedAt: undefined }
     })
     this.store.saveBulkCampaign({ ...campaign, updatedAt: Date.now(), state: 'running', items })
     this.bulkRuns.set(campaignId, { campaignId, running: true, busy: false, nextActionAt: 0, successCount: 0, pausedReason: `Đang gửi lại ${failed.length} số đã lỗi.` })
@@ -446,7 +452,7 @@ export class AutomationService {
       ...campaign,
       updatedAt: Date.now(),
       state: run.running ? 'running' : 'stopped',
-      items: campaign.items.map(item => item.id === id ? { ...item, ...update } : item),
+      items: campaign.items.map(item => item.id === id ? { ...item, ...update, updatedAt: this.bulkClock().getTime() } : item),
     })
   }
 
@@ -530,7 +536,7 @@ export class AutomationService {
     }
     run.busy = true
     this.bulkAccountsBusy.add(campaign.settings.accountId)
-    this.updateBulkItem(run, next.id, { status: 'searching', detail: 'Đang tìm tài khoản Zalo theo số điện thoại.', retryAt: undefined })
+    this.updateBulkItem(run, next.id, { status: 'searching', step: 'lookup', startedAt: now, finishedAt: undefined, detail: 'Đang tìm tài khoản Zalo theo số điện thoại.', retryAt: undefined })
     let foundUserName = ''
     let lookupCompleted = false
     try {
@@ -541,11 +547,22 @@ export class AutomationService {
         return
       }
       foundUserName = user.name
-      this.updateBulkItem(run, next.id, { status: 'sending', detail: `Đã tìm thấy ${user.name || 'tài khoản Zalo'}, đang gửi tin.`, name: user.name, failureStage: undefined })
+      this.updateBulkItem(run, next.id, { status: 'sending', step: 'text', detail: `Đã tìm thấy ${user.name || 'tài khoản Zalo'}, đang gửi tin.`, name: user.name, failureStage: undefined })
       const image = this.store.bulkImage(campaign.id)
-      await chat.automationSendMessage(user.id, campaign.settings.message, image ? { name: image.name, base64: image.base64 } : undefined)
+      if (campaign.settings.image && !image) throw new ChatError('Cấu hình có ảnh nhưng không tìm thấy dữ liệu ảnh đã lưu. Hãy tải lại ảnh trong Chỉnh sửa trước khi gửi.')
+      await chat.automationSendMessage(user.id, campaign.settings.message, image ? { name: image.name, base64: image.base64 } : undefined, progress => {
+        const at = this.bulkClock().getTime()
+        this.updateBulkItem(run, next.id, {
+          step: progress.stage,
+          detail: progress.stage === 'text'
+            ? progress.state === 'sending' ? 'Đang gửi tin nhắn chữ.' : image ? 'Đã gửi chữ, chuẩn bị gửi ảnh đính kèm.' : 'Đã gửi tin nhắn chữ.'
+            : progress.state === 'sending' ? `Đã gửi chữ. Đang tải lên và gửi ảnh ${image?.name ?? ''}.` : 'Đã gửi chữ và ảnh đính kèm.',
+          ...(progress.state === 'sent' ? progress.stage === 'text' ? { textSentAt: at } : { imageSentAt: at } : {}),
+        })
+      })
       const sentAt = this.bulkClock().getTime()
-      this.updateBulkItem(run, next.id, { status: 'sent', detail: 'Zalo đã xử lý lệnh gửi tin nhắn thành công.', name: user.name, sentAt, retryAt: undefined, retryCount: undefined })
+      const delivered = image ? 'Đã gửi chữ và ảnh đính kèm thành công.' : 'Đã gửi tin nhắn thành công.'
+      this.updateBulkItem(run, next.id, { status: 'sent', step: 'friend', detail: `${delivered} Đang gửi lời mời kết bạn.`, name: user.name, sentAt, retryAt: undefined, retryCount: undefined })
       run.successCount += 1
       if (run.successCount >= BULK_MESSAGE_PAUSE_EVERY) {
         run.successCount = 0
@@ -557,10 +574,10 @@ export class AutomationService {
       // The message is already persisted as sent. A rejected invitation must never requeue it.
       try {
         await chat.automationSendFriendRequest(user.id)
-        this.updateBulkItem(run, next.id, { detail: 'Zalo đã xử lý lệnh gửi tin nhắn và lời mời kết bạn thành công.' })
+        this.updateBulkItem(run, next.id, { step: 'done', finishedAt: this.bulkClock().getTime(), detail: `${delivered} Đã gửi lời mời kết bạn thành công.` })
       } catch (cause) {
         const friendError = cause instanceof Error ? cause.message : 'Zalo không xử lý được lời mời kết bạn.'
-        this.updateBulkItem(run, next.id, { detail: `Đã gửi tin nhắn thành công, nhưng chưa gửi được lời mời kết bạn: ${friendError} Không gửi lại tin nhắn.` })
+        this.updateBulkItem(run, next.id, { step: 'done', finishedAt: this.bulkClock().getTime(), detail: `${image ? 'Đã gửi chữ và ảnh đính kèm thành công' : 'Đã gửi tin nhắn thành công'}, nhưng chưa gửi được lời mời kết bạn: ${friendError} Không gửi lại tin nhắn.` })
       }
     } catch (cause) {
       const reason = cause instanceof Error ? cause.message : 'Không xử lý được số điện thoại này.'
@@ -583,12 +600,13 @@ export class AutomationService {
             ? `${next.phone} sẽ được thử lại lúc ${time}; đang tiếp tục các số còn lại.`
             : `Đang chờ thử lại ${next.phone} lúc ${time} (giờ Việt Nam).`
         } else {
-          this.updateBulkItem(run, next.id, { status: 'error', detail: `Đã hết ${BULK_MESSAGE_MAX_LOOKUP_RETRIES} lần thử lại (${retryCount} lần tra cứu). Bỏ qua số này và tiếp tục danh sách. ${reason}`, retryCount, retryAt: undefined, failureStage: 'lookup' })
+          this.updateBulkItem(run, next.id, { status: 'error', finishedAt: this.bulkClock().getTime(), detail: `Đã hết ${BULK_MESSAGE_MAX_LOOKUP_RETRIES} lần thử lại (${retryCount} lần tra cứu). Bỏ qua số này và tiếp tục danh sách. ${reason}`, retryCount, retryAt: undefined, failureStage: 'lookup' })
           run.pausedReason = `Đã bỏ qua ${next.phone} sau ${BULK_MESSAGE_MAX_LOOKUP_RETRIES} lần thử lại; tiếp tục danh sách.`
         }
       } else {
-        const detail = `Đã tìm thấy ${foundUserName || 'tài khoản Zalo'}, nhưng gửi tin thất bại: ${reason} Không tự gửi lại số này để tránh gửi trùng; sẽ tiếp tục các số còn lại.`
-        this.updateBulkItem(run, next.id, { status: 'error', detail, failureStage: 'send', retryAt: undefined })
+        const currentItem = this.store.bulkCampaign(run.campaignId)?.items.find(item => item.id === next.id)
+        const detail = `${currentItem?.textSentAt ? 'Đã gửi chữ, nhưng chưa hoàn tất gửi ảnh' : `Đã tìm thấy ${foundUserName || 'tài khoản Zalo'}, nhưng gửi tin thất bại`}: ${reason} Không tự gửi lại số này để tránh gửi trùng; sẽ tiếp tục các số còn lại.`
+        this.updateBulkItem(run, next.id, { status: 'error', finishedAt: this.bulkClock().getTime(), detail, failureStage: 'send', retryAt: undefined })
         run.successCount = 0
         run.nextActionAt = this.bulkClock().getTime() + BULK_MESSAGE_DELAY_SECONDS * 1000
         run.pausedReason = `Gửi tới ${next.phone} không thành công; tiếp tục các số còn lại sau ${BULK_MESSAGE_DELAY_SECONDS} giây.`

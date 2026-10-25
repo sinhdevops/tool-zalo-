@@ -40,7 +40,14 @@ export interface BulkMessageItem {
   failureStage?: 'lookup' | 'send'
   name?: string
   sentAt?: number
+  step?: 'lookup' | 'text' | 'image' | 'friend' | 'done'
+  startedAt?: number
+  updatedAt?: number
+  textSentAt?: number
+  imageSentAt?: number
+  finishedAt?: number
 }
+export interface BulkSendProgress { stage: 'text' | 'image'; state: 'sending' | 'sent' }
 // Older campaigns have no failureStage; only recognizable lookup errors are safe to resend.
 export function canRetryBulkItem(item: BulkMessageItem) {
   if (item.status !== 'error' || /người lạ|stranger/i.test(item.detail)) return false
@@ -69,8 +76,11 @@ export interface BulkMessageCampaign {
   settings: BulkMessageSettings
   dailyResumeAt?: number
   items: BulkMessageItem[]
+  pausedReason?: string
+  nextActionAt?: number
 }
 export interface BulkMessageSnapshot {
+  snapshotAt?: number
   activeCampaignId?: string
   running: boolean
   pausedReason: string

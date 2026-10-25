@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { FiAlertCircle, FiArrowLeft, FiCheckCircle, FiClock, FiEdit2, FiEye, FiImage, FiMessageSquare, FiPhone, FiPlay, FiPlus, FiRefreshCw, FiSquare, FiX } from 'react-icons/fi'
 import { canRetryBulkItem, BULK_MESSAGE_LOOKUPS_PER_HOUR, BULK_MESSAGE_DELAY_SECONDS, BULK_MESSAGE_MAX_LOOKUP_RETRIES, BULK_MESSAGE_PAUSE_EVERY, BULK_MESSAGE_PAUSE_SECONDS } from '../../../shared/automation'
@@ -13,6 +13,8 @@ import './overview.css'
 
 const statusLabels = { pending: 'Chờ xử lý', searching: 'Đang tìm Zalo', sending: 'Đang gửi', sent: 'Đã gửi', error: 'Lỗi' } as const
 const campaignStateLabels = { ready: 'Chưa chạy', running: 'Đang chạy', stopped: 'Đã dừng', completed: 'Hoàn tất' } as const
+const stepLabels = { lookup: 'Đang tra cứu', text: 'Đang gửi chữ', image: 'Đang gửi ảnh', friend: 'Đang kết bạn', done: 'Hoàn tất' } as const
+const displayTime = (at: number) => new Date(at).toLocaleString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' })
 const imageTypes: Record<string, string> = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp' }
 
 async function imageUpload(file: File): Promise<BulkMessageImageUpload> {
@@ -53,10 +55,17 @@ export default function BulkMessagePage() {
   const [actionError, setActionError] = useState('')
   const [actionCampaignId, setActionCampaignId] = useState<string | null>(null)
   const [retryingCampaignId, setRetryingCampaignId] = useState<string | null>(null)
+  const [followActive, setFollowActive] = useState(true)
+  const activeRow = useRef<HTMLTableRowElement>(null)
 
   const selectedAccountId = accountId || accounts[0]?.id || ''
   const editingCampaign = data?.campaigns.find(campaign => campaign.id === editingCampaignId)
   const detailsCampaign = data?.campaigns.find(campaign => campaign.id === detailsCampaignId)
+  const activeItem = detailsCampaign?.state === 'running' ? detailsCampaign.items.find(item => item.status === 'searching' || item.status === 'sending' || item.step === 'friend') : undefined
+  const activeItemId = activeItem?.id
+  useEffect(() => {
+    if (followActive && activeItemId) activeRow.current?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
+  }, [activeItemId, followActive, detailsCampaignId])
   const runningCount = data?.campaigns.filter(campaign => campaign.state === 'running').length ?? 0
   const progress = useMemo(() => data?.total ? Math.round(((data.sent + data.failed) / data.total) * 100) : 0, [data])
   const runningStatus = data?.running ? (data.pausedReason ? data.pausedReason : 'Đang xử lý danh sách.') : data?.pausedReason || 'Chưa chạy'
@@ -236,6 +245,12 @@ export default function BulkMessagePage() {
       {detailsCampaign && <Modal title={`Kết quả từng số · ${detailsCampaign.items.length} số`} onClose={() => setDetailsCampaignId(null)}>
         <div className="bulk-detail-modal">
           <div className="bulk-detail-summary"><span>{accounts.find(account => account.id === detailsCampaign.settings.accountId)?.displayName || detailsCampaign.settings.accountId}</span><span>{campaignStateLabels[detailsCampaign.state]}</span><span>{detailsCampaign.items.filter(item => item.status === 'sent').length} đã gửi</span><span>{detailsCampaign.items.filter(item => item.status === 'error').length} lỗi</span></div>
+          <div className="bulk-live-status">
+            <strong aria-live="polite">{activeItem ? `Số ${detailsCampaign.items.findIndex(item => item.id === activeItem.id) + 1}/${detailsCampaign.items.length} · ${activeItem.phone} · ${activeItem.step ? stepLabels[activeItem.step] : statusLabels[activeItem.status]}` : detailsCampaign.pausedReason || campaignStateLabels[detailsCampaign.state]}</strong>
+            {detailsCampaign.nextActionAt && <span>Lượt tiếp theo: {displayTime(detailsCampaign.nextActionAt)}</span>}
+            {data?.snapshotAt && <small>Đồng bộ lúc {displayTime(data.snapshotAt)} · tự cập nhật mỗi 1,5 giây</small>}
+          </div>
+          <div className="bulk-row-legend"><span className="sent">Xanh lá: hoàn tất</span><span className="active">Xanh dương: đang xử lý</span><span className="error">Đỏ: lỗi</span><label><input type="checkbox" checked={followActive} onChange={event => setFollowActive(event.target.checked)} /> Theo dõi dòng đang chạy</label></div>
           {detailsCampaign.state !== 'running' && detailsCampaign.items.some(item => item.status === 'pending') && <button className="auto-button primary" disabled={busy} onClick={() => void runCampaign(detailsCampaign.id)}><FiPlay /> Tiếp tục số đang chờ</button>}
           {actionCampaignId === detailsCampaign.id && actionError && <p className="auto-error" role="alert">{actionError}</p>}
           {detailsCampaign.items.some(canRetryBulkItem) && detailsCampaign.state !== 'running' && <button className="auto-button" disabled={busy} onClick={() => void retryFailed(detailsCampaign.id)}><FiRefreshCw /> {retryingCampaignId === detailsCampaign.id ? 'Đang đưa vào hàng chờ…' : 'Gửi lại lỗi tra cứu'}</button>}
@@ -243,7 +258,21 @@ export default function BulkMessagePage() {
             <div className="auto-table-scroll bulk-detail-scroll"><table className="auto-table bulk-table"><thead><tr><th>Số điện thoại</th><th>Tài khoản</th><th>Trạng thái</th><th>Chi tiết</th><th>Thời gian</th></tr></thead><tbody>
               {detailsCampaign.items.map(item => {
                 const waitingForRetry = item.status === 'pending' && Boolean(item.retryAt)
-                return <tr key={item.id}><td><strong>{item.phone}</strong></td><td>{item.name || '—'}</td><td><span className={`bulk-status ${waitingForRetry ? 'searching' : item.status}`}>{waitingForRetry ? 'Chờ thử lại' : statusLabels[item.status]}</span></td><td>{item.detail}</td><td>{item.sentAt ? new Date(item.sentAt).toLocaleString('vi-VN') : '—'}</td></tr>
+                const isActive = item.id === activeItemId
+                const rowStatus = item.status === 'error' ? 'error' : isActive ? 'active' : item.status === 'sent' ? 'sent' : 'pending'
+                const updatedAt = item.updatedAt || item.finishedAt || item.sentAt || item.startedAt
+                return <tr key={item.id} ref={isActive ? activeRow : undefined} className={`bulk-result-row bulk-result-row--${rowStatus}`} aria-current={isActive ? 'step' : undefined}>
+                  <td><strong>{item.phone}</strong></td><td>{item.name || '—'}</td>
+                  <td><span className={`bulk-status ${isActive ? 'active' : item.status}`}>{isActive && item.step ? stepLabels[item.step] : waitingForRetry ? 'Chờ thử lại' : statusLabels[item.status]}</span></td>
+                  <td>{item.detail}</td>
+                  <td className="bulk-item-times">{updatedAt ? <time dateTime={new Date(updatedAt).toISOString()}>Cập nhật: {displayTime(updatedAt)}</time> : '—'}
+                    {item.startedAt && <small>Bắt đầu: {displayTime(item.startedAt)}</small>}
+                    {item.textSentAt && <small>Đã gửi chữ: {displayTime(item.textSentAt)}</small>}
+                    {item.imageSentAt && <small>Đã gửi ảnh: {displayTime(item.imageSentAt)}</small>}
+                    {(item.finishedAt || item.sentAt) && <small>{item.finishedAt ? 'Kết thúc' : 'Đã gửi'}: {displayTime(item.finishedAt || item.sentAt!)}</small>}
+                    {waitingForRetry && <small>Thử lại: {displayTime(item.retryAt!)}</small>}
+                  </td>
+                </tr>
               })}
             </tbody></table></div>}
         </div>

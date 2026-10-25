@@ -131,7 +131,7 @@
 .bulk-status { display: inline-flex; align-items: center; padding: 5px 8px; border-radius: 999px; background: #f1f4f8; color: #687c94; font-size: 10px; font-weight: 650; white-space: nowrap; }
 .bulk-status.sent { color: #13724f; background: #e7f7ef; }
 .bulk-status.error { color: #a02d41; background: #fff0f3; }
-.bulk-status.searching, .bulk-status.sending { color: #946020; background: #fff5e5; }
+.bulk-status.searching, .bulk-status.sending, .bulk-status.active { color: #1d4ed8; background: #dbeafe; }
 .bulk-settings label small { display: block; margin-top: 3px; color: #8a99ad; font-weight: 400; }
 .bulk-settings textarea,
 .bulk-settings input { width: 100%; box-sizing: border-box; padding: 11px 12px; border: 1px solid #dce6f4; border-radius: 8px; background: #fff; color: #365578; font: inherit; resize: vertical; }
@@ -149,4 +149,19 @@
 .bulk-detail-scroll { max-height: min(62vh, 650px); overflow: auto; }
 .bulk-detail-scroll .bulk-table { min-width: 900px; }
 .bulk-detail-scroll .bulk-table td:nth-child(4) { min-width: 300px; }
+.bulk-live-status { display: grid; gap: 5px; padding: 12px 14px; border: 1px solid #bfdbfe; border-radius: 8px; background: #eff6ff; color: #1e40af; font-size: 12px; }
+.bulk-live-status small { color: #526b8c; }
+.bulk-row-legend { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; font-size: 11px; }
+.bulk-row-legend .sent { color: #13724f; }
+.bulk-row-legend .active { color: #1d4ed8; }
+.bulk-row-legend .error { color: #a02d41; }
+.bulk-row-legend label { display: inline-flex; align-items: center; gap: 5px; margin-left: auto; cursor: pointer; }
+.bulk-detail-scroll .bulk-result-row--sent > td { background: #e7f7ef; color: #145c43; }
+.bulk-detail-scroll .bulk-result-row--active > td { background: #dbeafe; color: #1e40af; }
+.bulk-detail-scroll .bulk-result-row--error > td { background: #fff0f3; color: #92283b; }
+.bulk-result-row--sent > td:first-child { box-shadow: inset 4px 0 #16a34a; }
+.bulk-result-row--active > td:first-child { box-shadow: inset 4px 0 #2563eb; }
+.bulk-result-row--error > td:first-child { box-shadow: inset 4px 0 #e11d48; }
+.bulk-item-times { min-width: 175px; font-size: 11px; }
+.bulk-item-times time, .bulk-item-times small { display: block; color: inherit; }
 @media (max-width: 680px) { .bulk-settings__row { grid-template-columns: 1fr; } }

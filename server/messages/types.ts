@@ -1,5 +1,5 @@
 import type { Conversation, ConversationList, ConversationType, MessageList, PhoneSyncState, SendChatInput, MessageAction } from '../../shared/messages.ts'
-import type { IncomingMessage, GroupMember } from '../../shared/automation.ts'
+import type { IncomingMessage, GroupMember, BulkSendProgress } from '../../shared/automation.ts'
 
 export interface MessagingConnection {
   subscribeIncoming: (listener: (event: IncomingMessage) => void) => () => void
@@ -8,7 +8,7 @@ export interface MessagingConnection {
   automationHeart: (groupId: string, messageId: string, clientId: string) => Promise<void>
   automationDeliver: (targetGroupId: string, text: string, contacts: Array<{ phone: string; contactId?: string }>) => Promise<Array<{ phone: string; card: boolean }>>
   automationFindUser: (phone: string, onProgress?: (detail: string) => void, maxRetries?: number) => Promise<{ id: string; name: string; avatar: string }>
-  automationSendMessage: (contactId: string, text: string, attachment?: { name: string; base64: string }) => Promise<void>
+  automationSendMessage: (contactId: string, text: string, attachment?: { name: string; base64: string }, onProgress?: (progress: BulkSendProgress) => void) => Promise<void>
   automationSendFriendRequest: (contactId: string) => Promise<void>
   openPersonal: (contactId: string, name: string) => Conversation
   list: (type: ConversationType) => Promise<ConversationList>

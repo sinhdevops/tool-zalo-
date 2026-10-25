@@ -12,7 +12,7 @@ import { lookupRateLimitRetryAt } from '../automation/lookup-policy.ts'
 import { normalizeMessage, safeMediaUrl } from './normalize.ts'
 import { readDocumentsHistory } from './documents-history.ts'
 import { UnreadStore } from './unread-store.ts'
-import type { IncomingMessage, GroupMember } from '../../shared/automation.ts'
+import type { IncomingMessage, GroupMember, BulkSendProgress } from '../../shared/automation.ts'
 import type { EncryptedChatStore } from './chat-store.ts'
 import { DatabaseSync } from 'node:sqlite'
 import { PhoneSyncController } from './phone-sync.ts'
@@ -181,7 +181,7 @@ export class ZaloMessagingConnection implements MessagingConnection {
     if (emptyResponse) throw new ChatError('Zalo đã phản hồi nhưng không trả về UID hợp lệ cho số này (mã 216 hoặc không tìm thấy tài khoản).', 404)
     throw new ChatError('Không tra cứu được tài khoản Zalo cho số này.', 502)
   }
-  async automationSendMessage(contactId: string, text: string, attachment?: { name: string; base64: string }) {
+  async automationSendMessage(contactId: string, text: string, attachment?: { name: string; base64: string }, onProgress?: (progress: BulkSendProgress) => void) {
     this.requireAutomationConnection(contactId)
     if (typeof text !== 'string' || text.length > MAX_MESSAGE_LENGTH || (!text.trim() && !attachment)) throw new ChatError('Nội dung tin nhắn không hợp lệ.')
     let source: { name: string; data: Buffer } | undefined
@@ -202,23 +202,28 @@ export class ZaloMessagingConnection implements MessagingConnection {
         await writeFile(file, source.data, { mode: 0o600 })
       }
       const recordText = (response: Awaited<ReturnType<API['sendMessage']>>) => {
-        if (this.disposed || !response.message) return
+        if (this.disposed || !hasMessageId(response.message)) return
         const conversation = this.threads.get(keyOf('personal', contactId))
         this.remember({
-          id: String(response.message.msgId), threadId: contactId, type: 'personal', senderId: this.ownId,
+          id: String(response.message!.msgId), threadId: contactId, type: 'personal', senderId: this.ownId,
           senderName: this.ownName, self: true, text, timestamp: Date.now(), attachments: [],
         })
         if (conversation) this.setThread(keyOf('personal', contactId), { ...conversation, lastMessage: text, updatedAt: Date.now() })
       }
-      const hasMessageId = (result: { msgId: number } | null | undefined) =>
-        typeof result?.msgId === 'number' && Number.isFinite(result.msgId) && result.msgId > 0
+      const hasMessageId = (result: { msgId: unknown } | null | undefined) =>
+        (typeof result?.msgId === 'number' && Number.isFinite(result.msgId) && result.msgId > 0)
+        || (typeof result?.msgId === 'string' && /^\d+$/.test(result.msgId) && /[1-9]/.test(result.msgId))
       let response: Awaited<ReturnType<API['sendMessage']>>
+      onProgress?.({ stage: 'text', state: 'sending' })
       if (file) {
         const textResponse = await this.api.sendMessage({ msg: text }, contactId, ThreadType.User)
-        if (!textResponse || typeof textResponse !== 'object' || !hasMessageId(textResponse.message)) {
+        // The SDK can resolve a successful text request without a message ID, just as in text-only sends.
+        if (!textResponse || typeof textResponse !== 'object') {
           throw new Error('Zalo chưa xác nhận tin nhắn chữ; chưa gửi ảnh.')
         }
         recordText(textResponse)
+        onProgress?.({ stage: 'text', state: 'sent' })
+        onProgress?.({ stage: 'image', state: 'sending' })
         response = await this.api.sendMessage({ msg: '', attachments: file }, contactId, ThreadType.User)
       } else {
         response = await this.api.sendMessage({ msg: text }, contactId, ThreadType.User)
@@ -227,7 +232,16 @@ export class ZaloMessagingConnection implements MessagingConnection {
       if (file && (!Array.isArray(response.attachment) || !response.attachment.some(hasMessageId))) {
         throw new Error('Zalo chưa xác nhận gửi ảnh.')
       }
+      if (file && !this.disposed) {
+        for (const sent of response.attachment.filter(hasMessageId)) {
+          // The listener supplies the permanent media URL; retain an image entry meanwhile.
+          if (!this.items.get(keyOf('personal', contactId))?.some(message => message.id === String(sent.msgId))) {
+            this.remember({ id: String(sent.msgId), threadId: contactId, type: 'personal', senderId: this.ownId, senderName: this.ownName, self: true, text: '', timestamp: Date.now(), attachments: [{ kind: 'image', name: source!.name }] })
+          }
+        }
+      }
       if (!file) recordText(response)
+      onProgress?.({ stage: file ? 'image' : 'text', state: 'sent' })
     } catch (cause) {
       if (cause instanceof ChatError) throw cause
       const reason = cause instanceof Error && cause.message ? `: ${cause.message}` : ''
