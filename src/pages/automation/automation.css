@@ -9,6 +9,34 @@
     color: #496387;
 }
 
+.sender-select__option {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 9px 10px;
+    border-radius: 5px;
+    cursor: pointer;
+}
+
+.sender-select__option:hover,
+.sender-select__option:focus-within,
+.sender-select__option[data-selected="true"] {
+    background: #eff6ff;
+}
+
+.sender-select__option input {
+    flex-shrink: 0;
+    width: 16px;
+    height: 16px;
+    margin: 0;
+    accent-color: #2563eb;
+}
+
+.sender-select__option span {
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+
 .auto-heading,
 .auto-panel-heading {
     display: flex;

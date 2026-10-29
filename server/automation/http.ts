@@ -64,8 +64,9 @@ export async function handleAutomation(request: IncomingMessage, response: Serve
   else if (action === '/api/automation/choices' && method === 'GET') json(response, 200, await service.choices(url.searchParams.get('accountId') ?? '', url.searchParams.get('groupId') || undefined))
   else if (action === '/api/automation/rule' && method === 'POST') {
     const data = await body(request)
-    if (typeof data.accountId !== 'string' || typeof data.groupId !== 'string' || typeof data.senderId !== 'string' || typeof data.targetGroupId !== 'string') throw new ChatError('Cấu hình không hợp lệ.')
-    json(response, 200, await service.configure(data.accountId, data.groupId, data.senderId, data.targetGroupId, data.id === null ? null : typeof data.id === 'string' ? data.id : undefined))
+    const senders = data.senderIds === undefined ? data.senderId : data.senderIds
+    if (typeof data.accountId !== 'string' || typeof data.groupId !== 'string' || typeof data.targetGroupId !== 'string' || !(typeof senders === 'string' && data.senderIds === undefined || Array.isArray(senders) && senders.every(id => typeof id === 'string'))) throw new ChatError('Cấu hình không hợp lệ.')
+    json(response, 200, await service.configure(data.accountId, data.groupId, senders as string | string[], data.targetGroupId, data.id === null ? null : typeof data.id === 'string' ? data.id : undefined))
   } else if (action === '/api/automation/enabled' && method === 'POST') {
     const data = await body(request)
     if (typeof data.enabled !== 'boolean') throw new ChatError('Trạng thái bật/tắt không hợp lệ.')

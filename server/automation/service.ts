@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import type { AccountService } from '../accounts/service.ts'
 import type { MessagingConnection } from '../messages/types.ts'
 import { ChatError, ZaloLookupRateLimitError } from '../messages/types.ts'
-import { canRetryBulkItem, BULK_MESSAGE_LOOKUPS_PER_HOUR } from '../../shared/automation.ts'
+import { automationSenderIds, canRetryBulkItem, BULK_MESSAGE_LOOKUPS_PER_HOUR } from '../../shared/automation.ts'
 import { BULK_MESSAGE_DELAY_SECONDS, BULK_MESSAGE_MAX_LOOKUP_RETRIES, BULK_MESSAGE_PAUSE_EVERY, BULK_MESSAGE_PAUSE_SECONDS } from '../../shared/automation.ts'
 import type { AutomationRule, BulkMessageCampaign, BulkMessageImageUpload, BulkMessageItem, BulkMessageSettings, BulkMessageSnapshot, IncomingMessage, Lead } from '../../shared/automation.ts'
 import { AutomationStore } from './store.ts'
@@ -87,27 +87,29 @@ export class AutomationService {
     if (groupId) return { members: await chat.groupMembers(groupId) }
     return { groups: (await chat.list('group')).conversations }
   }
-  private async validate(accountId: string, groupId: string, senderId: string, targetGroupId: string) {
-    if (![accountId, groupId, senderId, targetGroupId].every((id) => /^\d{1,30}$/.test(id))) throw new ChatError('Hãy chọn tài khoản, nhóm theo dõi, người gửi và nhóm nhận hợp lệ.')
-    if (accountId === senderId) throw new ChatError('Chọn người gửi khác tài khoản đang trực.')
+  private async validate(accountId: string, groupId: string, senderIds: string[], targetGroupId: string) {
+    if (!senderIds.length || ![accountId, groupId, ...senderIds, targetGroupId].every((id) => /^\d{1,30}$/.test(id))) throw new ChatError('Hãy chọn tài khoản, nhóm theo dõi, ít nhất một người gửi và nhóm nhận hợp lệ.')
+    if (senderIds.includes(accountId)) throw new ChatError('Chọn người gửi khác tài khoản đang trực.')
     if (groupId === targetGroupId) throw new ChatError('Nhóm nhận số phải khác nhóm đang theo dõi.')
     const chat = this.accounts.getMessaging(accountId)
     const groups = (await chat.list('group')).conversations
     const group = groups.find((g) => g.id === groupId)
     const targetGroup = groups.find((g) => g.id === targetGroupId)
-    const sender = (await chat.groupMembers(groupId)).find((m) => m.id === senderId)
-    if (!group || !targetGroup || !sender) throw new ChatError('Không tìm thấy nhóm hoặc thành viên đã chọn.')
-    return { groupName: group.name, senderName: sender.name, targetGroupName: targetGroup.name }
+    const members = await chat.groupMembers(groupId)
+    const senders = senderIds.map(id => members.find(member => member.id === id))
+    if (!group || !targetGroup || senders.some(sender => !sender)) throw new ChatError('Không tìm thấy nhóm hoặc thành viên đã chọn.')
+    return { groupName: group.name, senderName: senders.map(sender => sender!.name).join(', '), targetGroupName: targetGroup.name }
   }
-  async configure(accountId: string, groupId: string, senderId: string, targetGroupId: string, id: string | null = 'group-leads') {
+  async configure(accountId: string, groupId: string, senders: string | string[], targetGroupId: string, id: string | null = 'group-leads') {
+    const senderIds = [...new Set(typeof senders === 'string' ? [senders] : senders)]
     const ruleId = id ?? randomUUID()
     const previous = this.store.rule(ruleId)
     if (id && id !== 'group-leads' && !previous) throw new ChatError('Không tìm thấy cấu hình.', 404)
     if (previous?.enabled) throw new ChatError('Tắt quy tắc và chờ thao tác hiện tại hoàn tất trước khi đổi cấu hình.', 409)
-    const names = await this.validate(accountId, groupId, senderId, targetGroupId)
+    const names = await this.validate(accountId, groupId, senderIds, targetGroupId)
     if (this.closed || this.store.rule(ruleId)?.enabled || this.store.rule(ruleId)?.revision !== previous?.revision) throw new ChatError('Trạng thái đã thay đổi. Hãy tải lại.', 409)
-    if (this.store.rules().some(rule => rule.id !== ruleId && rule.accountId === accountId && rule.groupId === groupId && rule.senderId === senderId && rule.targetGroupId === targetGroupId)) throw new ChatError('Cấu hình nhận nhóm này đã tồn tại.', 409)
-    const rule: AutomationRule = { id: ruleId, accountId, groupId, senderId, targetGroupId, ...names, enabled: false, enabledAt: 0, revision: randomUUID() }
+    if (this.store.rules().some(rule => rule.id !== ruleId && rule.accountId === accountId && rule.groupId === groupId && automationSenderIds(rule).some(sender => senderIds.includes(sender)) && rule.targetGroupId === targetGroupId)) throw new ChatError('Đã có cấu hình nhận nhóm theo dõi người gửi này tới cùng nhóm nhận.', 409)
+    const rule: AutomationRule = { id: ruleId, accountId, groupId, senderId: senderIds[0]!, senderIds, targetGroupId, ...names, enabled: false, enabledAt: 0, revision: randomUUID() }
     this.store.saveRule(rule); this.store.log('Đã lưu cấu hình trực nhóm. Quy tắc đang tắt.')
     return this.snapshot()
   }
@@ -118,7 +120,7 @@ export class AutomationService {
     if (enabled) {
       if (this.store.jobs('running').some(job => job.revision === rule.revision)) throw new ChatError('Chờ thao tác của nhóm này hoàn tất.', 409)
       if (!rule.targetGroupId) throw new ChatError('Mở Cấu hình và chọn nhóm nhận số trước khi bật quy tắc.')
-      await this.validate(rule.accountId, rule.groupId, rule.senderId, rule.targetGroupId)
+      await this.validate(rule.accountId, rule.groupId, automationSenderIds(rule), rule.targetGroupId)
       if (this.closed || this.store.rule(id)?.revision !== rule.revision) throw new ChatError('Cấu hình đã thay đổi. Hãy tải lại.', 409)
     }
     this.store.transaction(() => {
@@ -139,11 +141,11 @@ export class AutomationService {
     if (cardPhones.length !== 1) return
     this.store.enrichLeadFromCard(scope, cardPhones[0]!, card.name, card.contactId)
   }
-  private scope(rule: AutomationRule) { return `${rule.accountId}:${rule.groupId}:${rule.senderId}${rule.id === 'group-leads' ? '' : ':' + rule.id}` }
+  private scope(rule: AutomationRule, senderId: string) { return `${rule.accountId}:${rule.groupId}:${senderId}${rule.id === 'group-leads' ? '' : ':' + rule.id}` }
   private backfillCardNames(rule: AutomationRule, chat: MessagingConnection) {
-    const scope = this.scope(rule)
     for (const message of chat.messages('group', rule.groupId).messages) {
-      if (message.senderId !== rule.senderId) continue
+      if (!automationSenderIds(rule).includes(message.senderId)) continue
+      const scope = this.scope(rule, message.senderId)
       for (const attachment of message.attachments) if (attachment.kind === 'contact') this.applyCardToLead(scope, attachment)
     }
   }
@@ -153,8 +155,8 @@ export class AutomationService {
   }
   private ingestRule(rule: AutomationRule, accountId: string, event: IncomingMessage) {
     const m = event.message
-    if (!rule?.enabled || rule.accountId !== accountId || m.type !== 'group' || m.threadId !== rule.groupId || m.senderId !== rule.senderId || m.self || m.system || !Number.isFinite(m.timestamp) || m.timestamp < rule.enabledAt) return
-    const scope = this.scope(rule)
+    if (!rule?.enabled || rule.accountId !== accountId || m.type !== 'group' || m.threadId !== rule.groupId || !automationSenderIds(rule).includes(m.senderId) || m.self || m.system || !Number.isFinite(m.timestamp) || m.timestamp < rule.enabledAt) return
+    const scope = this.scope(rule, m.senderId)
     const textPhones = phones(m.text)
     const cards = m.attachments.filter((attachment) => attachment.kind === 'contact')
     if (!textPhones.length && !cards.length) return
@@ -163,7 +165,7 @@ export class AutomationService {
         if (!this.store.observe(`${scope}:${m.id}`)) return
         for (const card of cards) {
           const cardPhones = phones(card.phone ?? '')
-          if (cardPhones.length === 1 && card.contactId && /^\d{1,30}$/.test(card.contactId)) this.store.card({ revision: rule.revision, phone: cardPhones[0]!, contactId: card.contactId, name: card.name.trim().slice(0, 160), groupId: rule.groupId, messageId: m.id, clientId: event.clientId, at: m.timestamp })
+          if (cardPhones.length === 1 && card.contactId && /^\d{1,30}$/.test(card.contactId)) this.store.card({ revision: rule.revision, senderId: m.senderId, phone: cardPhones[0]!, contactId: card.contactId, name: card.name.trim().slice(0, 160), groupId: rule.groupId, messageId: m.id, clientId: event.clientId, at: m.timestamp })
           this.applyCardToLead(scope, card)
         }
         if (!textPhones.length) return
@@ -174,7 +176,7 @@ export class AutomationService {
           const now = Date.now()
           const lead: Lead = previous ? { ...previous, updatedAt: now, occurrences: previous.occurrences + 1, name: fields.name || previous.name, address: fields.address || previous.address, plan: fields.plan || previous.plan } : {
             id: randomUUID(), scope, phone, ...fields, name: fields.name || '', createdAt: now, updatedAt: now,
-            sourceAt: m.timestamp, sourceId: m.id, occurrences: 1, accountId, groupId: rule.groupId, groupName: rule.groupName, senderId: rule.senderId, revision: rule.revision, hasOrder: true, status: 'queued', stage: 'new', detail: `Chờ thả tim và chuyển tiếp sang nhóm ${rule.targetGroupName}.` }
+            sourceAt: m.timestamp, sourceId: m.id, occurrences: 1, accountId, groupId: rule.groupId, groupName: rule.groupName, senderId: m.senderId, revision: rule.revision, hasOrder: true, status: 'queued', stage: 'new', detail: `Chờ thả tim và chuyển tiếp sang nhóm ${rule.targetGroupName}.` }
           lead.sourceAt = m.timestamp; lead.sourceId = m.id; lead.revision = rule.revision; lead.hasOrder = true; lead.status = 'queued'; lead.sentAt = undefined; lead.delivery = 'forward'; lead.detail = `Chờ thả tim và chuyển tiếp sang nhóm ${rule.targetGroupName}.`
           this.store.saveLead(lead)
           leadIds.push(lead.id)
@@ -232,7 +234,7 @@ export class AutomationService {
         let lead = this.store.lead(leadId)
         if (!lead) return []
         const sourceAt = lead.sourceAt
-        const card = this.store.cards(job.revision, lead.phone, sourceAt).filter((item) => item.groupId === job.groupId).sort((a, b) => Math.abs(a.at - sourceAt) - Math.abs(b.at - sourceAt))[0]
+        const card = this.store.cards(job.revision, lead.phone, sourceAt).filter((item) => item.groupId === job.groupId && (!item.senderId || item.senderId === lead.senderId)).sort((a, b) => Math.abs(a.at - sourceAt) - Math.abs(b.at - sourceAt))[0]
         if (card) {
           this.store.enrichLeadFromCard(lead.scope, lead.phone, card.name ?? '', card.contactId)
           lead = this.store.lead(leadId) ?? lead

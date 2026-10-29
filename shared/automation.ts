@@ -2,9 +2,12 @@ import type { ChatMessage } from './messages.ts'
 
 export interface AutomationRule {
   id: string; accountId: string; groupId: string; groupName: string; senderId: string; senderName: string
+  senderIds?: string[]
   targetGroupId: string; targetGroupName: string
   enabled: boolean; enabledAt: number; revision: string
 }
+// Rules saved before multiple sender selection contain only senderId.
+export function automationSenderIds(rule: AutomationRule): string[] { return rule.senderIds ?? [rule.senderId] }
 export type LeadStatus = 'waiting' | 'queued' | 'friend' | 'sending' | 'sent' | 'review'
 export const LEAD_STAGES = ['new', 'consulting', 'not-closed', 'waiting-install', 'unpaid', 'paid', 'transfer-fpt', 'transfer-vnpt', 'no-demand', 'cancelled'] as const
 export type LeadStage = typeof LEAD_STAGES[number]

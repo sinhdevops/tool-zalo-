@@ -53,7 +53,7 @@ export const automationApi = {
   logs: (signal: AbortSignal) => request<AutomationLogs>('/api/automation/logs', signal),
   groups: (accountId: string, signal: AbortSignal) => request<{ groups: Conversation[] }>(`/api/automation/choices?${new URLSearchParams({ accountId })}`, signal),
   members: (accountId: string, groupId: string, signal: AbortSignal) => request<{ members: GroupMember[] }>(`/api/automation/choices?${new URLSearchParams({ accountId, groupId })}`, signal),
-  configure: (accountId: string, groupId: string, senderId: string, targetGroupId: string, id: string | null = null) => request<AutomationSnapshot>('/api/automation/rule', undefined, { accountId, groupId, senderId, targetGroupId, id }),
+  configure: (accountId: string, groupId: string, senderIds: string[], targetGroupId: string, id: string | null = null) => request<AutomationSnapshot>('/api/automation/rule', undefined, { accountId, groupId, senderIds, targetGroupId, id }),
   toggle: (enabled: boolean, id: string) => request<AutomationSnapshot>('/api/automation/enabled', undefined, { enabled, id }),
   bulkState: (signal: AbortSignal) => request<BulkMessageSnapshot>('/api/automation/bulk', signal),
   bulkCreate: (data: { accountId: string; phones: string; message: string; startTime: string; endTime: string; delaySeconds: number; dailyLimit: number; image?: BulkMessageImageUpload }) => request<BulkMessageSnapshot>('/api/automation/bulk/create', undefined, data),

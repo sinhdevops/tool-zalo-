@@ -7,7 +7,7 @@ export interface Job {
   id: string; revision: string; accountId: string; kind: 'forward'; leadIds: string[]
   groupId: string; targetGroupId: string; messageId: string; clientId: string; text: string; notBefore: number; state: 'pending' | 'running' | 'done' | 'review' | 'cancelled'
 }
-export interface Card { revision: string; phone: string; contactId: string; name?: string; groupId: string; messageId: string; clientId: string; at: number }
+export interface Card { revision: string; senderId?: string; phone: string; contactId: string; name?: string; groupId: string; messageId: string; clientId: string; at: number }
 export class AutomationStore {
   static readonly LOG_LIMIT = 100
   private db: DatabaseSync
